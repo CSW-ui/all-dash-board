@@ -4,3 +4,4 @@ node_modules
 *.tsbuildinfo
 .claude/
 C*UsersbcaveDownloads*
+tmp_sf.json
