@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { snowflakeQuery } from '@/lib/snowflake'
-import { VALID_BRANDS } from '@/lib/constants'
+import { VALID_BRANDS, ITEM_CATEGORY_MAP } from '@/lib/constants'
 
 // GET /api/planning?brand=CO&year=26&season=봄,여름
 export async function GET(req: Request) {
@@ -20,13 +20,15 @@ export async function GET(req: Request) {
   const vBrandClause = brand === 'all'
     ? `v.BRANDCD IN ('CO','WA','LE','CK','LK')`
     : `v.BRANDCD = '${brand}'`
+  const rawBrandClause = brand === 'all'
+    ? `BRANDCD IN ('CO','WA','LE','CK','LK')`
+    : `BRANDCD = '${brand}'`
 
   const toDt = searchParams.get('toDt') || ''  // YYYYMMDD, 비어있으면 제한 없음
 
   const seasonList = seasons.map(s => `'${s}'`).join(',')
   const saleDateFrom = `20${year}0101`
   const saleDateTo = toDt ? `AND v.SALEDT <= '${toDt}'` : ''
-  const saleDateToSub = toDt ? `AND SALEDT <= '${toDt}'` : ''
 
   // 주간 날짜 계산 (전주 마감 기준)
   const today = new Date()
@@ -36,11 +38,19 @@ export async function GET(req: Request) {
   const cwStart = new Date(lastSun); cwStart.setDate(cwStart.getDate() - 6)
   const pwEnd = new Date(cwStart); pwEnd.setDate(pwEnd.getDate() - 1)
   const pwStart = new Date(pwEnd); pwStart.setDate(pwStart.getDate() - 6)
+  // 3주 전 (Rising 보정용)
+  const pw2End = new Date(pwStart); pw2End.setDate(pw2End.getDate() - 1)
+  const pw2Start = new Date(pw2End); pw2Start.setDate(pw2Start.getDate() - 6)
   const fD = (d: Date) => `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`
-  const cwS = fD(cwStart); const cwE = fD(cwEnd); const pwS = fD(pwStart); const pwE = fD(pwEnd)
+  const cwS = fD(cwStart); const cwE = fD(cwEnd)
+  const pwS = fD(pwStart); const pwE = fD(pwEnd)
+  const pw2S = fD(pw2Start); const pw2E = fD(pw2End)
+
+  // 당월 날짜 계산
+  const monthStart = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}01`
 
   try {
-    const [itemSummary, orderByItem, inboundByItem, salesByItem, shopInvByItem, whInvByItem, channelSales] = await Promise.all([
+    const [itemSummary, skuByItem, orderByItem, inboundByItem, salesByItem, shopInvByItem, whInvByItem, channelSales] = await Promise.all([
       // 1. 품목별 스타일 마스터
       snowflakeQuery<{
         ITEMNM: string; STYLE_CNT: number; AVG_TAG: number; AVG_COST: number
@@ -57,7 +67,21 @@ export async function GET(req: Request) {
         ORDER BY STYLE_CNT DESC
       `),
 
-      // 1-1. 발주 데이터 (SW_STYLEINFO_DETAIL): 발주수량, 발주금액(택가), 발주원가
+      // 1-1. SKU수 (스타일×컬러 단위)
+      snowflakeQuery<{
+        ITEMNM: string; SKU_CNT: number
+      }>(`
+        SELECT si.ITEMNM,
+          COUNT(DISTINCT d.STYLECD || '-' || d.COLORCD) as SKU_CNT
+        FROM BCAVE.SEWON.SW_STYLEINFO_DETAIL d
+        JOIN BCAVE.SEWON.SW_STYLEINFO si ON d.STYLECD = si.STYLECD AND d.BRANDCD = si.BRANDCD
+        WHERE ${siBrandClause}
+          AND si.YEARCD = '${year}'
+          AND si.SEASONNM IN (${seasonList})
+        GROUP BY si.ITEMNM
+      `),
+
+      // 2. 발주 데이터 (SW_STYLEINFO_DETAIL): 발주수량, 발주금액(택가), 발주원가
       snowflakeQuery<{
         ITEMNM: string; ORD_QTY: number; ORD_TAG_AMT: number; ORD_COST_AMT: number
       }>(`
@@ -72,7 +96,7 @@ export async function GET(req: Request) {
         GROUP BY d.ITEMNM
       `),
 
-      // 1-2. 입고 데이터 (SW_WHININFO): 입고수량, 입고금액
+      // 3. 입고 데이터 (SW_WHININFO): 입고수량, 입고금액
       snowflakeQuery<{
         ITEMNM: string; IN_QTY: number; IN_AMT: number
       }>(`
@@ -87,7 +111,7 @@ export async function GET(req: Request) {
         GROUP BY si.ITEMNM
       `),
 
-      // 2. 품목별 판매 실적 + 주간 실적
+      // 4. 품목별 판매 실적 + 주간 실적 + 당월 실적
       snowflakeQuery<Record<string, string>>(`
         SELECT si.ITEMNM,
           SUM(v.SALEQTY) as SALE_QTY,
@@ -97,8 +121,11 @@ export async function GET(req: Request) {
           SUM(COALESCE(si.PRODCOST, 0) * v.SALEQTY) as COST_AMT,
           SUM(CASE WHEN v.SALEDT BETWEEN '${cwS}' AND '${cwE}' THEN v.SALEAMT_VAT_EX ELSE 0 END) as CW_AMT,
           SUM(CASE WHEN v.SALEDT BETWEEN '${pwS}' AND '${pwE}' THEN v.SALEAMT_VAT_EX ELSE 0 END) as PW_AMT,
+          SUM(CASE WHEN v.SALEDT BETWEEN '${pw2S}' AND '${pw2E}' THEN v.SALEAMT_VAT_EX ELSE 0 END) as PW2_AMT,
           SUM(CASE WHEN v.SALEDT BETWEEN '${cwS}' AND '${cwE}' THEN v.SALEQTY ELSE 0 END) as CW_QTY,
-          SUM(CASE WHEN v.SALEDT BETWEEN '${cwS}' AND '${cwE}' THEN COALESCE(si.PRODCOST, 0) * v.SALEQTY ELSE 0 END) as CW_COST
+          SUM(CASE WHEN v.SALEDT BETWEEN '${cwS}' AND '${cwE}' THEN COALESCE(si.PRODCOST, 0) * v.SALEQTY ELSE 0 END) as CW_COST,
+          SUM(CASE WHEN v.SALEDT >= '${monthStart}' THEN v.SALEAMT_VAT_EX ELSE 0 END) as MONTH_AMT,
+          SUM(CASE WHEN v.SALEDT >= '${monthStart}' THEN v.SALEQTY ELSE 0 END) as MONTH_QTY
         FROM BCAVE.SEWON.VW_SALES_VAT v
         JOIN BCAVE.SEWON.SW_STYLEINFO si ON v.STYLECD = si.STYLECD AND v.BRANDCD = si.BRANDCD
         WHERE ${vBrandClause}
@@ -109,7 +136,7 @@ export async function GET(req: Request) {
         GROUP BY si.ITEMNM
       `),
 
-      // 3. 품목별 매장 재고
+      // 5. 품목별 매장 재고
       snowflakeQuery<{
         ITEMNM: string; SHOP_INV: number; SHOP_AVAIL: number
       }>(`
@@ -124,7 +151,7 @@ export async function GET(req: Request) {
         GROUP BY si.ITEMNM
       `),
 
-      // 4. 품목별 창고 재고
+      // 6. 품목별 창고 재고
       snowflakeQuery<{
         ITEMNM: string; WH_AVAIL: number; WH_ONLINE: number; WH_OFFLINE: number
       }>(`
@@ -140,7 +167,7 @@ export async function GET(req: Request) {
         GROUP BY si.ITEMNM
       `),
 
-      // 5. 채널별 판매 비중
+      // 7. 채널별 판매 비중
       snowflakeQuery<{
         SHOPTYPENM: string; SALE_QTY: number; SALE_AMT: number
       }>(`
@@ -160,6 +187,7 @@ export async function GET(req: Request) {
     ])
 
     // 품목별 데이터 조합
+    const skuMap = new Map(skuByItem.map(r => [r.ITEMNM, r]))
     const orderMap = new Map(orderByItem.map(r => [r.ITEMNM, r]))
     const inboundMap = new Map(inboundByItem.map(r => [r.ITEMNM, r]))
     const salesMap = new Map(salesByItem.map(r => [r.ITEMNM as string, r]))
@@ -167,12 +195,17 @@ export async function GET(req: Request) {
     const whInvMap = new Map(whInvByItem.map(r => [r.ITEMNM, r]))
 
     const items = itemSummary.map(item => {
+      const sku = skuMap.get(item.ITEMNM)
       const order = orderMap.get(item.ITEMNM)
       const inbound = inboundMap.get(item.ITEMNM)
       const sales = salesMap.get(item.ITEMNM)
       const shopInv = shopInvMap.get(item.ITEMNM)
       const whInv = whInvMap.get(item.ITEMNM)
 
+      // SKU수
+      const skuCnt = Number(sku?.SKU_CNT || 0)
+      // 카테고리
+      const category = ITEM_CATEGORY_MAP[item.ITEMNM] || '기타'
       // 발주 (기획)
       const ordQty = Number(order?.ORD_QTY || 0)
       const ordTagAmt = Number(order?.ORD_TAG_AMT || 0)
@@ -188,26 +221,41 @@ export async function GET(req: Request) {
       const costAmt = Number(sales?.COST_AMT || 0)
       const cwAmt = Number(sales?.CW_AMT || 0)
       const pwAmt = Number(sales?.PW_AMT || 0)
+      const pw2Amt = Number(sales?.PW2_AMT || 0)
       const cwQty = Number(sales?.CW_QTY || 0)
       const cwCost = Number(sales?.CW_COST || 0)
+      const monthAmt = Number(sales?.MONTH_AMT || 0)
+      const monthQty = Number(sales?.MONTH_QTY || 0)
       // 재고
       const shopInvQty = Number(shopInv?.SHOP_INV || 0)
       const shopAvailQty = Number(shopInv?.SHOP_AVAIL || 0)
       const whAvailQty = Number(whInv?.WH_AVAIL || 0)
       const totalInv = shopInvQty + whAvailQty
-      // 소진율: 판매수량 / 발주수량
-      const sellThrough = ordQty > 0 ? (saleQty / ordQty) * 100 : 0
+      // 판매율: 판매수량 / 입고수량 (입고 기준)
+      const salesRate = inQty > 0 ? (saleQty / inQty) * 100 : 0
       const avgTag = Math.round(Number(item.AVG_TAG))
+      const avgCost = Math.round(Number(item.AVG_COST))
       const dcRate = tagAmt > 0 ? (1 - salePriceAmt / tagAmt) * 100 : 0
       const cogsRate = saleAmt > 0 ? (costAmt / saleAmt) * 100 : 0
       // 입고율: 입고수량 / 발주수량
       const inboundRate = ordQty > 0 ? (inQty / ordQty) * 100 : 0
+      // 재고금액 (TAG·원가)
+      const invTagAmt = totalInv * avgTag
+      const invCostAmt = totalInv * avgCost
+
+      // WoW 계산 (3주 데이터로 Rising 판별)
+      const wow = pwAmt > 0 ? ((cwAmt - pwAmt) / pwAmt) * 100 : 0
+      const wow2 = pw2Amt > 0 ? ((pwAmt - pw2Amt) / pw2Amt) * 100 : 0
+      // 최근 3주 평균 WoW
+      const recentWowAvg = (wow + wow2) / 2
 
       return {
         item: item.ITEMNM,
+        category,
         styleCnt: Number(item.STYLE_CNT),
+        skuCnt,
         avgTag,
-        avgCost: Math.round(Number(item.AVG_COST)),
+        avgCost,
         ordQty,        // 발주수량
         ordTagAmt,     // 발주금액 (택가)
         ordCostAmt,    // 발주원가
@@ -221,19 +269,27 @@ export async function GET(req: Request) {
         costAmt,
         dcRate: Math.round(dcRate * 10) / 10,
         cogsRate: Math.round(cogsRate * 10) / 10,
-        cwAmt, pwAmt, cwQty, cwCost,
+        salesRate: Math.round(salesRate * 10) / 10,  // 판매율 (입고 기준)
+        cwAmt, pwAmt, pw2Amt, cwQty, cwCost,
         cwCogsRate: cwAmt > 0 ? Math.round(cwCost / cwAmt * 1000) / 10 : 0,
-        wow: pwAmt > 0 ? Math.round((cwAmt - pwAmt) / pwAmt * 1000) / 10 : 0,
+        wow: Math.round(wow * 10) / 10,
+        recentWowAvg: Math.round(recentWowAvg * 10) / 10,
+        monthAmt,
+        monthQty,
         shopInv: shopInvQty,
         shopAvail: shopAvailQty,
         whAvail: whAvailQty,
         totalInv,
-        sellThrough: Math.round(sellThrough * 10) / 10,
+        invTagAmt,
+        invCostAmt,
+        // 하위 호환: sellThrough는 salesRate로 대체하되, 기존 코드 호환용 유지
+        sellThrough: Math.round(salesRate * 10) / 10,
       }
     })
 
     // KPI 집계
     const totalStyles = items.reduce((s, i) => s + i.styleCnt, 0)
+    const totalSkus = items.reduce((s, i) => s + i.skuCnt, 0)
     const totalOrdQty = items.reduce((s, i) => s + i.ordQty, 0)
     const totalOrdTagAmt = items.reduce((s, i) => s + i.ordTagAmt, 0)
     const totalInQty = items.reduce((s, i) => s + i.inQty, 0)
@@ -244,8 +300,14 @@ export async function GET(req: Request) {
     const totalCostAmt = items.reduce((s, i) => s + i.costAmt, 0)
     const totalSaleTagAmt = items.reduce((s, i) => s + i.tagAmt, 0)
     const totalSalePriceAmt = items.reduce((s, i) => s + i.salePriceAmt, 0)
-    const overallSellThrough = totalOrdQty > 0
-      ? Math.round((totalSaleQty / totalOrdQty) * 1000) / 10 : 0
+    const totalMonthAmt = items.reduce((s, i) => s + i.monthAmt, 0)
+    const totalMonthQty = items.reduce((s, i) => s + i.monthQty, 0)
+    const totalInvTagAmt = items.reduce((s, i) => s + i.invTagAmt, 0)
+    const totalInvCostAmt = items.reduce((s, i) => s + i.invCostAmt, 0)
+
+    // 판매율 = 판매수량 / 입고수량
+    const overallSalesRate = totalInQty > 0
+      ? Math.round((totalSaleQty / totalInQty) * 1000) / 10 : 0
     const overallInboundRate = totalOrdQty > 0
       ? Math.round((totalInQty / totalOrdQty) * 1000) / 10 : 0
     const overallDcRate = totalSaleTagAmt > 0
@@ -262,11 +324,16 @@ export async function GET(req: Request) {
     return NextResponse.json({
       kpi: {
         totalStyles,
+        totalSkus,
         totalOrdQty, totalOrdTagAmt,
         totalInQty, totalInAmt,
         totalSaleAmt, totalSaleQty,
+        totalSaleTagAmt,
         totalInvQty, totalCostAmt,
-        sellThrough: overallSellThrough,
+        totalMonthAmt, totalMonthQty,
+        totalInvTagAmt, totalInvCostAmt,
+        salesRate: overallSalesRate,
+        sellThrough: overallSalesRate, // 하위 호환
         inboundRate: overallInboundRate,
         dcRate: overallDcRate,
         cogsRate: overallCogsRate,

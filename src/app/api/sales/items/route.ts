@@ -12,6 +12,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Invalid brand' }, { status: 400 })
   }
   const weekNum = searchParams.get('weekNum') || ''
+  const channels = searchParams.get('channels') || ''
+
+  // 다중 채널 필터
+  let chFilter = ''
+  if (channels) {
+    const chList = channels.split(',').map(c => `'${c.trim().replace(/'/g, "''")}'`).join(',')
+    chFilter = `AND v.SHOPTYPENM IN (${chList})`
+  }
 
   const brandWhere = brand === 'all'
     ? BRAND_FILTER.replace(/BRANDCD/g, 'v.BRANDCD')
@@ -48,6 +56,7 @@ export async function GET(req: Request) {
         WHERE ${brandWhere}
           AND ((YEAR(TO_DATE(v.SALEDT,'YYYYMMDD'))=${yr} AND WEEKOFYEAR(TO_DATE(v.SALEDT,'YYYYMMDD')) IN (${wn},${pwn}))
             OR (YEAR(TO_DATE(v.SALEDT,'YYYYMMDD'))=${lyYr} AND WEEKOFYEAR(TO_DATE(v.SALEDT,'YYYYMMDD'))=${wn}))
+          ${chFilter}
         GROUP BY si.ITEMNM
         ORDER BY CW_REV DESC`
     } else {
@@ -62,6 +71,7 @@ export async function GET(req: Request) {
         JOIN BCAVE.SEWON.SW_STYLEINFO si ON v.STYLECD = si.STYLECD AND v.BRANDCD = si.BRANDCD
         WHERE ${brandWhere}
           AND (v.SALEDT BETWEEN '${pwStart}' AND '${cwEnd}' OR v.SALEDT BETWEEN '${lyCwStart}' AND '${lyCwEnd}')
+          ${chFilter}
         GROUP BY si.ITEMNM
         ORDER BY CW_REV DESC`
     }

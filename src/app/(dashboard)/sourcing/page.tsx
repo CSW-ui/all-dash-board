@@ -1,11 +1,17 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
-  Truck, Search, Filter, AlertTriangle, Upload, Download, X, ClipboardPaste
+  Truck, Search, Filter, AlertTriangle, Upload, Download, X, ClipboardPaste,
+  BarChart3, TrendingUp
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { BRAND_NAMES } from '@/lib/constants'
+import {
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  AreaChart, Area,
+} from 'recharts'
 
 type SourcingItem = {
   stylecd: string; colorcd: string; brandcd: string;
@@ -107,17 +113,28 @@ export default function SourcingPage() {
     } catch (err) { console.error(err) }
   }
 
+  const [prevYearItems, setPrevYearItems] = useState<SourcingItem[]>([])
+
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
       const params = new URLSearchParams({ brand, year, season })
-      const res = await fetch(`/api/online/sourcing?${params}`)
+      const prevYear = String(Number(year) - 1)
+      const prevParams = new URLSearchParams({ brand, year: prevYear, season })
+
+      const [res, prevRes] = await Promise.all([
+        fetch(`/api/online/sourcing?${params}`),
+        fetch(`/api/online/sourcing?${prevParams}`),
+      ])
       const data = await res.json()
+      const prevData = await prevRes.json()
+
       if (!data.error) {
         setItems(data.items || [])
         setSummary(data.summary || { total: 0, waiting: 0, inProgress: 0, received: 0, sampleReady: 0, delayed: 0 })
         setSearched(true)
       }
+      setPrevYearItems(prevData.items || [])
     } catch (err) { console.error(err) }
     finally { setLoading(false) }
   }, [brand, year, season])
@@ -141,6 +158,102 @@ export default function SourcingPage() {
       (si.sourcingMd || '').toLowerCase().includes(q)
     )
   })
+
+  // ── 그래프 데이터 계산 (원가 분석 중심) ──
+  const chartData = useMemo(() => {
+    if (items.length === 0) return null
+    const prevYear = String(Number(year) - 1)
+    const curYear = year
+
+    // 품목별 집계 함수
+    const aggregateByItem = (list: SourcingItem[]) => {
+      const map: Record<string, { count: number; totalCost: number; totalTag: number; costs: number[] }> = {}
+      list.forEach(si => {
+        if (!si.precost || si.precost <= 0) return
+        const item = si.itemnm || '기타'
+        if (!map[item]) map[item] = { count: 0, totalCost: 0, totalTag: 0, costs: [] }
+        map[item].count += 1
+        map[item].totalCost += si.precost
+        map[item].totalTag += si.tagprice
+        map[item].costs.push(si.precost)
+      })
+      return map
+    }
+
+    const curAgg = aggregateByItem(items)
+    const prevAgg = aggregateByItem(prevYearItems)
+    const allItems = [...new Set([...Object.keys(curAgg), ...Object.keys(prevAgg)])]
+      .filter(k => curAgg[k] && prevAgg[k]) // 양쪽 다 있는 품목만
+
+    // A. 품목별 원가율 전년 대비 (원가율 = 제조원가 / 판매가 × 100)
+    const costRateData = allItems.map(item => {
+      const cur = curAgg[item]
+      const prev = prevAgg[item]
+      const curRate = cur.totalTag > 0 ? Math.round((cur.totalCost / cur.totalTag) * 100) : 0
+      const prevRate = prev.totalTag > 0 ? Math.round((prev.totalCost / prev.totalTag) * 100) : 0
+      return {
+        name: item.length > 6 ? item.slice(0, 6) + '..' : item,
+        fullName: item,
+        [`${prevYear}년`]: prevRate,
+        [`${curYear}년`]: curRate,
+        diff: curRate - prevRate,
+      }
+    }).sort((a, b) => b.diff - a.diff)
+
+    // B. 품목별 평균 제조원가 (절대 단가) 전년 대비
+    const avgCostData = allItems.map(item => {
+      const cur = curAgg[item]
+      const prev = prevAgg[item]
+      return {
+        name: item.length > 6 ? item.slice(0, 6) + '..' : item,
+        fullName: item,
+        [`${prevYear}년`]: Math.round(prev.totalCost / prev.count),
+        [`${curYear}년`]: Math.round(cur.totalCost / cur.count),
+        diff: Math.round(cur.totalCost / cur.count) - Math.round(prev.totalCost / prev.count),
+      }
+    }).sort((a, b) => b.diff - a.diff)
+
+    // C. 진행 단계별 분포 (Donut)
+    const stageCounts: Record<string, number> = {}
+    items.forEach(si => {
+      stageCounts[si.stage || '대기'] = (stageCounts[si.stage || '대기'] || 0) + 1
+    })
+    const stageData = Object.entries(stageCounts).map(([name, value]) => ({
+      name, value,
+      color: STAGE_COLORS[name]?.color || '#6b7280',
+    }))
+
+    // D. 협력사별 지연 현황 (업체명, 평균지연일, 지연상품수, 지연수량)
+    const vendorDelayMap: Record<string, { vendor: string; totalDelay: number; delayCount: number; delayQty: number; products: string[] }> = {}
+    items.forEach(si => {
+      if (!si.confirmedDueDate) return
+      const due = new Date(si.confirmedDueDate)
+      const actual = si.firstInboundDate ? new Date(si.firstInboundDate) : new Date()
+      const days = Math.round((actual.getTime() - due.getTime()) / (1000 * 60 * 60 * 24))
+      if (days <= 0) return
+      const v = si.vendor || '미지정'
+      if (!vendorDelayMap[v]) vendorDelayMap[v] = { vendor: v, totalDelay: 0, delayCount: 0, delayQty: 0, products: [] }
+      vendorDelayMap[v].totalDelay += days
+      vendorDelayMap[v].delayCount += 1
+      vendorDelayMap[v].delayQty += si.orderQty || 0
+      if (vendorDelayMap[v].products.length < 5) vendorDelayMap[v].products.push(si.stylecd)
+    })
+    const vendorDelayData = Object.values(vendorDelayMap)
+      .map(v => ({
+        name: v.vendor.length > 8 ? v.vendor.slice(0, 8) + '..' : v.vendor,
+        fullName: v.vendor,
+        avgDelay: Math.round(v.totalDelay / v.delayCount),
+        delayCount: v.delayCount,
+        delayQty: v.delayQty,
+        products: v.products.join(', '),
+      }))
+      .sort((a, b) => b.delayCount - a.delayCount)
+      .slice(0, 12)
+
+    return { costRateData, avgCostData, stageData, vendorDelayData, prevYear, curYear }
+  }, [items, prevYearItems, year])
+
+  const [showCharts, setShowCharts] = useState(true)
 
   // 엑셀 다운로드
   const handleDownload = () => {
@@ -301,6 +414,161 @@ export default function SourcingPage() {
         ))}
       </div>
 
+      {/* 그래프 영역 */}
+      {chartData && searched && (
+        <div className="space-y-4">
+          <button onClick={() => setShowCharts(!showCharts)}
+            className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700">
+            <BarChart3 className="w-4 h-4" />
+            {showCharts ? '분석 그래프 접기' : '분석 그래프 펼치기'}
+          </button>
+
+          {showCharts && (
+            <>
+              {/* 원가 분석 섹션 */}
+              {chartData.costRateData.length > 0 ? (
+                <>
+                  {/* 상단 2개: 원가율 전년대비 + 절대원가 전년대비 */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* A. 품목별 원가율 전년 대비 */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                      <h3 className="text-sm font-semibold text-gray-800 mb-1">품목별 원가율 전년 대비</h3>
+                      <p className="text-[11px] text-gray-400 mb-3">원가율 = 제조원가 ÷ 판매가 × 100</p>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <BarChart data={chartData.costRateData} barGap={2}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                          <YAxis tick={{ fontSize: 11 }} unit="%" domain={[0, 'auto']} />
+                          <Tooltip
+                            formatter={(value: number, name: string) => [`${value}%`, name]}
+                            labelFormatter={(_label: string, payload: Array<{ payload?: { fullName?: string; diff?: number } }>) => {
+                              const d = payload?.[0]?.payload
+                              return d ? `${d.fullName} (${d.diff && d.diff > 0 ? '+' : ''}${d.diff}%p)` : ''
+                            }}
+                          />
+                          <Bar dataKey={`${chartData.prevYear}년`} name={`${chartData.prevYear}년`} fill="#93c5fd" radius={[3, 3, 0, 0]} />
+                          <Bar dataKey={`${chartData.curYear}년`} name={`${chartData.curYear}년`} fill="#2563eb" radius={[3, 3, 0, 0]} />
+                          <Legend wrapperStyle={{ fontSize: '11px' }} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    {/* B. 품목별 평균 제조원가 (절대 단가) */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                      <h3 className="text-sm font-semibold text-gray-800 mb-1">품목별 평균 제조원가 (절대 단가)</h3>
+                      <p className="text-[11px] text-gray-400 mb-3">판매가 변동과 무관한 순수 원가 단가 비교</p>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <BarChart data={chartData.avgCostData} barGap={2}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                          <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v} />
+                          <Tooltip
+                            formatter={(value: number, name: string) => [`₩${value.toLocaleString()}`, name]}
+                            labelFormatter={(_label: string, payload: Array<{ payload?: { fullName?: string; diff?: number } }>) => {
+                              const d = payload?.[0]?.payload
+                              return d ? `${d.fullName} (${d.diff && d.diff > 0 ? '+' : ''}₩${d.diff?.toLocaleString()})` : ''
+                            }}
+                          />
+                          <Bar dataKey={`${chartData.prevYear}년`} name={`${chartData.prevYear}년`} fill="#fca5a5" radius={[3, 3, 0, 0]} />
+                          <Bar dataKey={`${chartData.curYear}년`} name={`${chartData.curYear}년`} fill="#dc2626" radius={[3, 3, 0, 0]} />
+                          <Legend wrapperStyle={{ fontSize: '11px' }} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                </>
+              ) : (
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 text-center text-sm text-gray-400">
+                  전년 데이터가 없어 원가 비교를 표시할 수 없습니다
+                </div>
+              )}
+
+              {/* 운영 현황: 진행단계 + 지연 TOP10 */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* D. 진행 단계별 분포 */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                  <h3 className="text-sm font-semibold text-gray-800 mb-3">진행 단계별 분포</h3>
+                  <ResponsiveContainer width="100%" height={240}>
+                    <PieChart>
+                      <Pie data={chartData.stageData} cx="50%" cy="50%" innerRadius={50} outerRadius={85}
+                        dataKey="value" paddingAngle={2} label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                        style={{ fontSize: '11px' }}>
+                        {chartData.stageData.map((entry, i) => (
+                          <Cell key={i} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value: number) => [`${value}건`, '수량']} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* D. 협력사별 지연 현황 */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                  <h3 className="text-sm font-semibold text-gray-800 mb-3">
+                    <AlertTriangle className="w-4 h-4 inline mr-1 text-red-500" />협력사별 지연 현황
+                  </h3>
+                  {chartData.vendorDelayData.length > 0 ? (
+                    <div className="space-y-3">
+                      <ResponsiveContainer width="100%" height={160}>
+                        <BarChart data={chartData.vendorDelayData} barSize={20}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                          <YAxis tick={{ fontSize: 10 }} />
+                          <Tooltip
+                            content={({ active, payload }) => {
+                              if (!active || !payload?.length) return null
+                              const d = payload[0].payload
+                              return (
+                                <div className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-xs">
+                                  <p className="font-semibold text-gray-800 mb-1">{d.fullName}</p>
+                                  <p>평균 지연: <span className="text-red-600 font-bold">{d.avgDelay}일</span></p>
+                                  <p>지연 상품수: <span className="font-bold">{d.delayCount}건</span></p>
+                                  <p>지연 수량: <span className="font-bold">{d.delayQty.toLocaleString()}pcs</span></p>
+                                  <p className="text-gray-400 mt-1">품번: {d.products}</p>
+                                </div>
+                              )
+                            }}
+                          />
+                          <Bar dataKey="delayCount" name="지연 상품수" fill="#fca5a5" radius={[3, 3, 0, 0]} />
+                          <Bar dataKey="avgDelay" name="평균 지연일" fill="#ef4444" radius={[3, 3, 0, 0]} />
+                          <Legend wrapperStyle={{ fontSize: '10px' }} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                      {/* 테이블 요약 */}
+                      <div className="overflow-auto max-h-[120px]">
+                        <table className="w-full text-[11px]">
+                          <thead className="sticky top-0 bg-gray-50">
+                            <tr className="text-gray-500">
+                              <th className="text-left py-1 px-2">협력사</th>
+                              <th className="text-right py-1 px-2">평균지연</th>
+                              <th className="text-right py-1 px-2">지연상품</th>
+                              <th className="text-right py-1 px-2">지연수량</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {chartData.vendorDelayData.map((v, i) => (
+                              <tr key={i} className="border-t border-gray-100">
+                                <td className="py-1 px-2 text-gray-800">{v.fullName}</td>
+                                <td className="py-1 px-2 text-right text-red-600 font-medium">{v.avgDelay}일</td>
+                                <td className="py-1 px-2 text-right">{v.delayCount}건</td>
+                                <td className="py-1 px-2 text-right">{v.delayQty.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-[240px] flex items-center justify-center text-sm text-emerald-500">지연 건 없음 ✓</div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* 필터 */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2 bg-white rounded-lg border border-gray-200 px-3 py-2">
@@ -346,9 +614,9 @@ export default function SourcingPage() {
 
       {/* 테이블 */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="overflow-auto max-h-[600px]">
           <table className="w-full text-xs">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="px-2 py-2.5 text-left font-semibold text-gray-600">브랜드</th>
                 <th className="px-2 py-2.5 text-left font-semibold text-gray-600">품번</th>

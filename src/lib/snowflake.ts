@@ -83,6 +83,28 @@ export async function snowflakeQuery<T = Record<string, unknown>>(
   const cols: string[] = json.resultSetMetaData?.rowType?.map((c: { name: string }) => c.name) ?? []
   const rows: unknown[][] = json.data ?? []
 
+  // 파티션 처리: Snowflake REST API는 대량 결과를 여러 파티션으로 분할
+  const totalPartitions = json.resultSetMetaData?.partitionInfo?.length ?? 1
+  const statementHandle = json.statementHandle
+
+  if (totalPartitions > 1 && statementHandle) {
+    for (let p = 1; p < totalPartitions; p++) {
+      const partRes = await fetch(
+        `${BASE_URL}/api/v2/statements/${statementHandle}?partition=${p}`,
+        {
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            'X-Snowflake-Authorization-Token-Type': 'KEYPAIR_JWT',
+          },
+        }
+      )
+      if (partRes.ok) {
+        const partJson = await partRes.json()
+        if (partJson.data) rows.push(...partJson.data)
+      }
+    }
+  }
+
   return rows.map((row) =>
     Object.fromEntries(cols.map((col, i) => [col, row[i]]))
   ) as T[]

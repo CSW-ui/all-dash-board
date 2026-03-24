@@ -4,9 +4,9 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, ReferenceLine,
+  Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea,
 } from 'recharts'
-import { RefreshCw, Package, ArrowUpDown } from 'lucide-react'
+import { RefreshCw, Package, ArrowUpDown, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { BRAND_COLORS, BRAND_NAMES, BRAND_TABS, brandNameToCode } from '@/lib/constants'
 import { fmtM, fmtPctI, fmtPctS } from '@/lib/formatters'
@@ -15,9 +15,9 @@ import { useAuth } from '@/contexts/AuthContext'
 import { PerfCells, PERF_GROUP_HEADER, PERF_HEADER_COLS } from '@/components/sales/PerfCells'
 import {
   type ChannelGroup, type WeekPoint, type WeeklyMeta, type Product,
-  type PerfData, type PerfMetrics, type SelFilter, type MonthProgress,
+  type PerfData, type PerfMetrics, type MonthProgress,
   CHANNEL_GROUP_ORDER, CHANNEL_GROUP_COLORS,
-  getChannelGroup, fmt, pct, sumAgg, calcMetrics, channelParams,
+  getChannelGroup, fmt, pct, sumAgg, calcMetrics, channelParamsFromSet,
 } from '@/lib/sales-types'
 
 const YEAR_TABS = [
@@ -75,10 +75,13 @@ export default function SalesDashboard() {
         ...BRAND_TABS.filter(b => b.value !== 'all' && allowedBrands.includes(b.value)),
       ]
     : BRAND_TABS
-  const [selWeek,  setSelWeek]  = useState<number | null>(null)
-  const [selFilter, setSelFilter] = useState<SelFilter>({ type: 'total' })
+  const [selWeekFrom, setSelWeekFrom] = useState<number | null>(null)  // 구간 시작 주
+  const [selWeekTo,   setSelWeekTo]   = useState<number | null>(null)  // 구간 끝 주 (null = 단일 주)
+  // 편의 변수: 단일 주 또는 구간의 대표 주
+  const selWeek = selWeekFrom
+  const [selChannels, setSelChannels] = useState<Set<string>>(new Set())  // 유통채널 다중 선택
   const [selProduct, setSelProduct] = useState<{ code: string; name: string } | null>(null)
-  const [selBrand, setSelBrand] = useState<string | null>(null)  // 브랜드 행 클릭 필터
+  const [selBrands, setSelBrands] = useState<Set<string>>(new Set())  // 브랜드 다중 선택 필터
   const [selItemFilter, setSelItemFilter] = useState<string | null>(null)  // 품목 클릭 필터
   const [itemSortKey, setItemSortKey] = useState<string>('cwRev')
   const [itemSortDir, setItemSortDir] = useState<'asc' | 'desc'>('desc')
@@ -100,12 +103,12 @@ export default function SalesDashboard() {
   const lastSunday = useMemo(getLastSunday, [])
 
   // ── 주간 차트 데이터 fetch ─────────────────────────────────────
-  const fetchWeekly = useCallback(async (sf: SelFilter, stylecd?: string | null) => {
+  const fetchWeekly = useCallback(async (chs: Set<string>, stylecd?: string | null) => {
     setWLoading(true); setError(null)
     const toDt = year === String(new Date().getFullYear()) ? lastSunday : `${year}1231`
     const styleParam = stylecd ? `&stylecd=${encodeURIComponent(stylecd)}` : ''
     try {
-      const url = `/api/sales/weekly?brand=${brand}&toDt=${toDt}${channelParams(sf)}${styleParam}`
+      const url = `/api/sales/weekly?brand=${brand}&toDt=${toDt}${channelParamsFromSet(chs)}${styleParam}`
       const res  = await fetch(url)
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`)
@@ -116,22 +119,23 @@ export default function SalesDashboard() {
   }, [brand, year, lastSunday])
 
   // ── 상품 fetch (기본: 전주 실적 기준) ─────────────────────────
-  const fetchProducts = useCallback(async (sw: number | null, sf: SelFilter) => {
+  const fetchProducts = useCallback(async (sw: number | null, chs: Set<string>) => {
     setPLoading(true)
     const toDt = year === String(new Date().getFullYear()) ? lastSunday : `${year}1231`
     const weekParam = sw != null ? `&weekNum=${sw}` : ''
-    // 특정 주 선택 없으면 전주(최근 완료 주) 기준 조회
+    // 특정 주 선택 없으면 전주 기준 (전전주 포함해야 WoW 계산 가능)
     const fromParam = sw == null && year === String(new Date().getFullYear())
       ? (() => {
           const d = new Date()
           const dow = d.getDay()
           const sun = new Date(d); sun.setDate(d.getDate() - (dow === 0 ? 7 : dow))
-          const mon = new Date(sun); mon.setDate(sun.getDate() - 6)
-          return `&fromDt=${mon.getFullYear()}${String(mon.getMonth()+1).padStart(2,'0')}${String(mon.getDate()).padStart(2,'0')}`
+          // 전전주 월요일부터 조회 (pwStart)
+          const pwMon = new Date(sun); pwMon.setDate(sun.getDate() - 13)
+          return `&fromDt=${pwMon.getFullYear()}${String(pwMon.getMonth()+1).padStart(2,'0')}${String(pwMon.getDate()).padStart(2,'0')}`
         })()
       : ''
     try {
-      const url = `/api/sales/products?brand=${brand}&year=${year}&toDt=${toDt}${weekParam}${fromParam}${channelParams(sf)}`
+      const url = `/api/sales/products?brand=${brand}&year=${year}&toDt=${toDt}${weekParam}${fromParam}${channelParamsFromSet(chs)}`
       const res  = await fetch(url)
       const json = await res.json()
       if (!res.ok) throw new Error(json.error)
@@ -141,17 +145,23 @@ export default function SalesDashboard() {
   }, [brand, year, lastSunday])
 
   // ── 영업 현황 데이터 fetch ────────────────────────────────────
-  const fetchPerformance = useCallback(async (stylecd?: string | null) => {
-    setPerfLoading(true)
+  const fetchPerformance = useCallback(async (
+    stylecd?: string | null, itemNm?: string | null, silent?: boolean,
+    weekNum?: number | null, weekFrom?: number | null, weekTo?: number | null,
+  ) => {
+    if (!silent) setPerfLoading(true)
     const styleParam = stylecd ? `&stylecd=${encodeURIComponent(stylecd)}` : ''
+    const itemParam = itemNm ? `&item=${encodeURIComponent(itemNm)}` : ''
+    const weekParam = weekNum ? `&weekNum=${weekNum}` : ''
+    const weekRangeParam = (weekFrom && weekTo) ? `&weekFrom=${Math.min(weekFrom, weekTo)}&weekTo=${Math.max(weekFrom, weekTo)}` : ''
     try {
       const monthParam = selMonth ? `&month=${selMonth}` : ''
-      const res = await fetch(`/api/sales/performance?brand=${brand}${styleParam}${monthParam}`)
+      const res = await fetch(`/api/sales/performance?brand=${brand}${styleParam}${monthParam}${itemParam}${weekParam}${weekRangeParam}`)
       const perfJson = await res.json()
       if (!res.ok) throw new Error(perfJson.error)
       setPerfData(perfJson)
     } catch { setPerfData(null) }
-    finally { setPerfLoading(false) }
+    finally { if (!silent) setPerfLoading(false) }
   }, [brand, selMonth])
 
   // ── 품목 데이터 fetch (브랜드 행 클릭 시 별도 호출) ────────
@@ -165,39 +175,46 @@ export default function SalesDashboard() {
 
   // 초기 + brand탭/year 변경 시 → 전체 fetch
   useEffect(() => {
-    setSelWeek(null); setSelFilter({ type: 'total' }); setSelProduct(null); setSelBrand(null); setSelItemFilter(null)
-    fetchWeekly({ type: 'total' })
-    fetchProducts(null, { type: 'total' })
+    setSelWeekFrom(null); setSelWeekTo(null); setSelChannels(new Set()); setSelProduct(null); setSelBrands(new Set()); setSelItemFilter(null)
+    fetchWeekly(new Set())
+    fetchProducts(null, new Set())
     fetchPerformance()
     fetchItems()
   }, [brand, year, selMonth])
 
-  // 채널 행 클릭 → 차트 + 베스트만 re-fetch (perf 테이블 유지)
+  // 채널 선택 변경 → 차트 + 베스트 + 품목 re-fetch (perf 테이블은 클라이언트 필터)
   useEffect(() => {
-    if (selFilter.type === 'total') return // 초기 로드는 위에서 처리
-    fetchWeekly(selFilter, selProduct?.code)
-    fetchProducts(selWeek, selFilter)
-  }, [selFilter])
-
-  // 주간 클릭 → 베스트 + 품목 re-fetch
-  useEffect(() => {
-    fetchProducts(selWeek, selFilter)
-    const b = selBrand ?? brand
+    if (selChannels.size === 0) return // 초기 로드는 위에서 처리
+    fetchWeekly(selChannels, selProduct?.code)
+    fetchProducts(selWeek, selChannels)
+    const b = getEffectiveBrand(selBrands)
     const weekP = selWeek ? `&weekNum=${selWeek}` : ''
-    fetch(`/api/sales/items?brand=${b}${weekP}`).then(r => r.json()).then(j => { if (j.items) setItemData(j.items) }).catch(() => {})
-  }, [selWeek])
+    fetch(`/api/sales/items?brand=${b}${weekP}${channelParamsFromSet(selChannels)}`).then(r => r.json()).then(j => { if (j.items) setItemData(j.items) }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selChannels])
+
+  // 주간 클릭 → 베스트 + 품목 + 주간 실적(브랜드/채널) re-fetch
+  useEffect(() => {
+    fetchProducts(selWeek, selChannels)
+    fetchPerformance(null, selItemFilter, true, selWeekTo ? null : selWeekFrom, selWeekFrom, selWeekTo)
+    const b = getEffectiveBrand(selBrands)
+    const weekP = selWeek ? `&weekNum=${selWeek}` : ''
+    fetch(`/api/sales/items?brand=${b}${weekP}${channelParamsFromSet(selChannels)}`).then(r => r.json()).then(j => { if (j.items) setItemData(j.items) }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selWeekFrom, selWeekTo])
 
   // 상품 클릭 → 차트만 re-fetch (다른 테이블 유지)
   useEffect(() => {
-    fetchWeekly(selFilter, selProduct?.code)
+    fetchWeekly(selChannels, selProduct?.code)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selProduct])
 
   // ── 영업 현황 테이블 데이터 빌드 ──────────────────────────────
   const perfTableData = useMemo(() => {
     if (!perfData) return null
-    // selBrand 필터 적용: 채널 테이블은 선택된 브랜드만
-    const cy = selBrand ? perfData.cy.filter(r => r.brandcd === selBrand) : perfData.cy
-    const ly = selBrand ? perfData.ly.filter(r => r.brandcd === selBrand) : perfData.ly
+    // selBrands 필터 적용: 채널 테이블은 선택된 브랜드만
+    const cy = selBrands.size > 0 ? perfData.cy.filter(r => selBrands.has(r.brandcd)) : perfData.cy
+    const ly = selBrands.size > 0 ? perfData.ly.filter(r => selBrands.has(r.brandcd)) : perfData.ly
 
     // 현재 월 자동 감지 (API에서 계산된 monthStart 기반)
     const curMonth = perfData.meta.monthStart.slice(0, 6) // YYYYMM
@@ -239,11 +256,26 @@ export default function SalesDashboard() {
 
     // 채널 목표 매칭 헬퍼 (shoptypenm의 부분 매칭 지원)
     function findChannelTarget(shoptypenm: string): number | null {
-      // 현재 brand 필터에 따라 키 결정
+      // selBrands가 선택되어 있으면 해당 브랜드들의 목표만 합산
+      if (selBrands.size > 0) {
+        let sum: number | null = null
+        for (const bc of Array.from(selBrands)) {
+          const exact = channelTargetMap[`${bc}|${shoptypenm}`]
+          if (exact != null) sum = (sum ?? 0) + exact
+          else {
+            const norm = shoptypenm.trim().toLowerCase()
+            for (const [k, v] of Object.entries(channelTargetMap)) {
+              if (!k.startsWith(`${bc}|`)) continue
+              if (k.split('|')[1].trim().toLowerCase().includes(norm) || norm.includes(k.split('|')[1].trim().toLowerCase())) { sum = (sum ?? 0) + v; break }
+            }
+          }
+        }
+        return sum
+      }
+      // brand 탭 필터 적용
       const prefix = brand === 'all' ? 'all' : brand
       const exact = channelTargetMap[`${prefix}|${shoptypenm}`]
       if (exact != null) return exact
-      // 부분 매칭 시도
       const norm = shoptypenm.trim().toLowerCase()
       for (const [k, v] of Object.entries(channelTargetMap)) {
         if (!k.startsWith(`${prefix}|`)) continue
@@ -274,7 +306,18 @@ export default function SalesDashboard() {
 
     const brandRows: BrandRow[] = []
     const cyAll = sumAgg(allCy); const lyAll = sumAgg(allLy)
-    const totalTgt = Object.values(brandTargetMap).reduce((s, v) => s + v, 0) || null
+    // 브랜드 필터 적용: selBrands 또는 brand 탭 기준
+    let totalTgt: number | null = null
+    if (selBrands.size > 0) {
+      let sum = 0; let found = false
+      for (const bc of Array.from(selBrands)) { if (brandTargetMap[bc] != null) { sum += brandTargetMap[bc]; found = true } }
+      totalTgt = found ? sum : null
+    } else if (brand !== 'all') {
+      totalTgt = brandTargetMap[brand] ?? null
+    } else {
+      const sum = Object.values(brandTargetMap).reduce((s, v) => s + v, 0)
+      totalTgt = sum > 0 ? sum : null
+    }
     brandRows.push({ label: '합계', brandcd: 'all', m: calcMetrics(cyAll, lyAll, totalTgt), bold: true })
     for (const bc of brandSorted) {
       const c = sumAgg(allCy.filter(r => r.brandcd === bc))
@@ -309,32 +352,70 @@ export default function SalesDashboard() {
     }
 
     return { brandRows, chRows }
-  }, [perfData, targets, brand, selBrand])
+  }, [perfData, targets, brand, selBrands])
 
   // ── 퍼포먼스 테이블 클릭 핸들러 ────────────────────────────────
-  const handleBrandClick = (brandcd: string) => {
-    const next = selBrand === brandcd ? null : brandcd
-    setSelBrand(next)
-    // 품목/베스트만 re-fetch (해당 브랜드 또는 전체)
-    const b = next === 'all' ? brand : (next ?? brand)
-    const toDt = year === String(new Date().getFullYear()) ? lastSunday : `${year}1231`
-    const fromDt = (() => { const d = new Date(); const dow = d.getDay(); const sun = new Date(d); sun.setDate(d.getDate() - (dow === 0 ? 7 : dow)); const mon = new Date(sun); mon.setDate(sun.getDate() - 6); return `${mon.getFullYear()}${String(mon.getMonth()+1).padStart(2,'0')}${String(mon.getDate()).padStart(2,'0')}` })()
-    // 차트 re-fetch
-    fetch(`/api/sales/weekly?brand=${b}&toDt=${toDt}${channelParams(selFilter)}`).then(r => r.json()).then(j => { setWeeks(j.weeks ?? []); setWeekMeta(j.meta ?? null) }).catch(() => {})
-    // 품목 re-fetch
-    fetch(`/api/sales/items?brand=${b}`).then(r => r.json()).then(j => { if (j.items) setItemData(j.items) }).catch(() => {})
-    // 베스트 re-fetch
-    fetch(`/api/sales/products?brand=${b}&year=${year}&toDt=${toDt}&fromDt=${fromDt}${channelParams(selFilter)}`).then(r => r.json()).then(j => { setProducts(j.products ?? []) }).catch(() => {})
+  // 브랜드 다중 선택에서 API용 브랜드 파라미터 결정
+  const getEffectiveBrand = (brands: Set<string>) => {
+    if (brands.size === 0) return brand  // 선택 없으면 탭 브랜드
+    if (brands.size === 1) return Array.from(brands)[0]
+    return brand  // 다중 선택이면 탭 기준 (클라이언트 필터)
   }
-  const salesRouter = useRouter()
-  const handleChannelClick = (group: ChannelGroup, channel: string, isGroupTotal: boolean) => {
-    if (isGroupTotal) {
-      // 채널그룹 클릭 → 차트/베스트만 필터 (perf 테이블 유지)
-      setSelFilter(prev => prev.type === 'group' && prev.group === group ? { type: 'total' } : { type: 'group', group })
-    } else {
-      // 개별 매장형태 클릭 → 상세 페이지 이동
-      salesRouter.push(`/sales/channel/${encodeURIComponent(channel)}`)
+
+  const handleBrandClick = (brandcd: string) => {
+    if (brandcd === 'all') {
+      // 합계 행 클릭 → 선택 초기화
+      setSelBrands(new Set())
+      return
     }
+    setSelBrands(prev => {
+      const next = new Set(prev)
+      if (next.has(brandcd)) next.delete(brandcd)
+      else next.add(brandcd)
+      return next
+    })
+  }
+
+  // selBrands 변경 시 차트/품목/베스트 re-fetch
+  useEffect(() => {
+    const b = getEffectiveBrand(selBrands)
+    const chParams = channelParamsFromSet(selChannels)
+    const toDt = year === String(new Date().getFullYear()) ? lastSunday : `${year}1231`
+    const fromDt = (() => { const d = new Date(); const dow = d.getDay(); const sun = new Date(d); sun.setDate(d.getDate() - (dow === 0 ? 7 : dow)); const pwMon = new Date(sun); pwMon.setDate(sun.getDate() - 13); return `${pwMon.getFullYear()}${String(pwMon.getMonth()+1).padStart(2,'0')}${String(pwMon.getDate()).padStart(2,'0')}` })()
+    fetch(`/api/sales/weekly?brand=${b}&toDt=${toDt}${chParams}`).then(r => r.json()).then(j => { setWeeks(j.weeks ?? []); setWeekMeta(j.meta ?? null) }).catch(() => {})
+    fetch(`/api/sales/items?brand=${b}${chParams}`).then(r => r.json()).then(j => { if (j.items) setItemData(j.items) }).catch(() => {})
+    fetch(`/api/sales/products?brand=${b}&year=${year}&toDt=${toDt}&fromDt=${fromDt}${chParams}`).then(r => r.json()).then(j => { setProducts(j.products ?? []) }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selBrands])
+  const salesRouter = useRouter()
+  const handleChannelClick = (group: ChannelGroup, channel: string, isGroupTotal: boolean, allChannelsInGroup?: string[]) => {
+    if (isGroupTotal && allChannelsInGroup) {
+      // 그룹 합계 클릭 → 해당 그룹 내 모든 채널 토글
+      setSelChannels(prev => {
+        const next = new Set(prev)
+        const allSelected = allChannelsInGroup.every(ch => next.has(ch))
+        if (allSelected) {
+          // 전부 선택됨 → 전부 해제
+          allChannelsInGroup.forEach(ch => next.delete(ch))
+        } else {
+          // 일부 또는 미선택 → 전부 선택
+          allChannelsInGroup.forEach(ch => next.add(ch))
+        }
+        return next
+      })
+    } else {
+      // 개별 채널 클릭 → 토글
+      setSelChannels(prev => {
+        const next = new Set(prev)
+        if (next.has(channel)) next.delete(channel)
+        else next.add(channel)
+        return next
+      })
+    }
+  }
+  const handleChannelNavigate = (channel: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    salesRouter.push(`/sales/channel/${encodeURIComponent(channel)}`)
   }
 
   // ── 차트 x축 레이블 ────────────────────────────────────────────
@@ -354,7 +435,7 @@ export default function SalesDashboard() {
           <h1 className="text-lg font-bold text-gray-900">매출 실적 대시보드</h1>
           <p className="text-xs text-gray-400 mt-0.5">부가세 제외 · 단위: 백만원</p>
         </div>
-        <button onClick={() => { fetchWeekly(selFilter); fetchProducts(selWeek, selFilter); fetchPerformance() }}
+        <button onClick={() => { fetchWeekly(selChannels); fetchProducts(selWeek, selChannels); fetchPerformance() }}
           disabled={wLoading}
           className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 border border-surface-border rounded-lg px-2.5 py-1.5 hover:bg-surface-subtle transition-colors">
           <RefreshCw size={12} className={wLoading ? 'animate-spin' : ''} />
@@ -397,18 +478,22 @@ export default function SalesDashboard() {
             return <option key={m} value={m}>{i + 1}월</option>
           })}
         </select>
-        {selBrand && (
-          <button onClick={() => handleBrandClick(selBrand)}
+        {Array.from(selBrands).map(bc => (
+          <button key={bc} onClick={() => handleBrandClick(bc)}
             className="flex items-center gap-1 text-[10px] text-brand-accent border border-brand-accent/30 rounded-full px-2 py-0.5 hover:bg-brand-accent-light">
-            {BRAND_NAMES[selBrand] ?? selBrand} <span className="text-[8px]">✕</span>
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: BRAND_COLORS[bc] }} />
+            {BRAND_NAMES[bc] ?? bc} <span className="text-[8px]">✕</span>
           </button>
-        )}
-        {selFilter.type !== 'total' && (
-          <button onClick={() => setSelFilter({ type: 'total' })}
+        ))}
+        {Array.from(selChannels).map(ch => (
+          <button key={ch} onClick={() => setSelChannels(prev => { const n = new Set(prev); n.delete(ch); return n })}
             className="flex items-center gap-1 text-[10px] text-blue-600 border border-blue-200 rounded-full px-2 py-0.5 hover:bg-blue-50">
-            {selFilter.type === 'group' ? selFilter.group : (selFilter as { channel: string }).channel}
-            <span className="text-[8px]">✕</span>
+            {ch} <span className="text-[8px]">✕</span>
           </button>
+        ))}
+        {selChannels.size > 1 && (
+          <button onClick={() => setSelChannels(new Set())}
+            className="text-[10px] text-gray-400 hover:text-gray-600 underline">채널 전체 해제</button>
         )}
         {selItemFilter && (
           <button onClick={() => setSelItemFilter(null)}
@@ -434,9 +519,9 @@ export default function SalesDashboard() {
         <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
           <h3 className="text-xs font-semibold text-gray-700">
             주간 매출 추이 ({year}년)
-            {selFilter.type !== 'total' && (
+            {selChannels.size > 0 && (
               <span className="ml-2 font-normal text-brand-accent">
-                · {selFilter.type === 'group' ? selFilter.group : (selFilter as { channel: string }).channel}
+                · {Array.from(selChannels).join(', ')}
               </span>
             )}
             {selProduct && (
@@ -445,14 +530,18 @@ export default function SalesDashboard() {
           </h3>
           <div className="flex items-center gap-4 text-xs">
             {(() => {
-              if (selWeek) {
-                // 주간 클릭 시: 해당 주 데이터
-                const w = weeks.find(wk => wk.weekNum === selWeek)
-                const cwRev = w?.cy ?? 0; const lyRev = w?.ly ?? 0
+              if (selWeekFrom != null) {
+                // 주간 또는 구간 선택
+                const wFrom = selWeekTo != null ? Math.min(selWeekFrom, selWeekTo) : selWeekFrom
+                const wTo = selWeekTo != null ? Math.max(selWeekFrom, selWeekTo) : selWeekFrom
+                const rangeWeeks = weeks.filter(wk => wk.weekNum >= wFrom && wk.weekNum <= wTo)
+                const cwRev = rangeWeeks.reduce((s, w) => s + (w.cy ?? 0), 0)
+                const lyRev = rangeWeeks.reduce((s, w) => s + (w.ly ?? 0), 0)
                 const delta = lyRev > 0 ? pct(cwRev - lyRev, lyRev) : null
+                const label = wFrom === wTo ? `W${wFrom}` : `W${wFrom}~W${wTo}`
                 return (<>
-                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-brand-accent" />W{selWeek} 금년 {fmt(cwRev)}</span>
-                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-slate-300" />W{selWeek} 전년 {fmt(lyRev)}</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-brand-accent" />{label} 금년 {fmt(cwRev)}</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-slate-300" />{label} 전년 {fmt(lyRev)}</span>
                   {delta != null && <span className={cn('font-semibold', delta >= 0 ? 'text-emerald-600' : 'text-red-500')}>YoY {fmtPctS(delta)}</span>}
                 </>)
               }
@@ -466,10 +555,10 @@ export default function SalesDashboard() {
                 {delta != null && <span className={cn('font-semibold', delta >= 0 ? 'text-emerald-600' : 'text-red-500')}>YoY {fmtPctS(delta)}</span>}
               </>)
             })()}
-            {selWeek && (
-              <button onClick={() => setSelWeek(null)}
+            {selWeekFrom != null && (
+              <button onClick={() => { setSelWeekFrom(null); setSelWeekTo(null) }}
                 className="text-[10px] text-gray-400 hover:text-gray-600 border border-gray-200 rounded px-1.5 py-0.5">
-                W{selWeek} 선택 해제
+                {selWeekTo != null ? `W${Math.min(selWeekFrom, selWeekTo)}~W${Math.max(selWeekFrom, selWeekTo)}` : `W${selWeekFrom}`} 선택 해제
               </button>
             )}
           </div>
@@ -484,7 +573,16 @@ export default function SalesDashboard() {
               onClick={(state) => {
                 if (state?.activePayload?.length) {
                   const w = state.activePayload[0].payload.weekNum as number
-                  setSelWeek(prev => prev === w ? null : w)
+                  if (selWeekFrom === null) {
+                    // 첫 클릭: 시작 주 설정
+                    setSelWeekFrom(w); setSelWeekTo(null)
+                  } else if (selWeekTo === null && w !== selWeekFrom) {
+                    // 두번째 클릭: 끝 주 설정 (구간 완성)
+                    setSelWeekTo(w)
+                  } else {
+                    // 세번째 클릭 또는 같은 주 클릭: 리셋
+                    setSelWeekFrom(null); setSelWeekTo(null)
+                  }
                 }
               }}
             >
@@ -497,16 +595,24 @@ export default function SalesDashboard() {
               />
               <YAxis tickFormatter={fmt} tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} width={52} />
               <Tooltip content={<WeekTooltip />} />
-              {selWeek != null && (
-                <ReferenceLine x={selWeek} stroke="#e91e63" strokeDasharray="3 3" strokeWidth={1.5} />
+              {selWeekFrom != null && selWeekTo != null && (
+                <ReferenceArea x1={Math.min(selWeekFrom, selWeekTo)} x2={Math.max(selWeekFrom, selWeekTo)} fill="#e91e63" fillOpacity={0.1} stroke="#e91e63" strokeOpacity={0.3} />
+              )}
+              {selWeekFrom != null && (
+                <ReferenceLine x={selWeekFrom} stroke="#e91e63" strokeDasharray="3 3" strokeWidth={1.5} />
+              )}
+              {selWeekTo != null && (
+                <ReferenceLine x={selWeekTo} stroke="#e91e63" strokeDasharray="3 3" strokeWidth={1.5} />
               )}
               <Line type="monotone" dataKey="ly" name="전년" stroke="#cbd5e1" strokeWidth={1.5} strokeDasharray="4 4" dot={false} connectNulls={false} />
               <Line type="monotone" dataKey="cy" name="금년" stroke="#e91e63" strokeWidth={2.5} connectNulls={false}
                 dot={(props: any) => {
                   const { cx, cy: cyY, payload } = props
                   if (payload.cy == null) return <g key={props.key} />
-                  if (payload.weekNum === selWeek) {
-                    return <circle key={props.key} cx={cx} cy={cyY} r={6} fill="#e91e63" stroke="white" strokeWidth={2} />
+                  const wFrom = selWeekTo != null ? Math.min(selWeekFrom!, selWeekTo) : selWeekFrom
+                  const wTo = selWeekTo != null ? Math.max(selWeekFrom!, selWeekTo) : selWeekFrom
+                  if (wFrom != null && payload.weekNum >= wFrom && payload.weekNum <= (wTo ?? wFrom)) {
+                    return <circle key={props.key} cx={cx} cy={cyY} r={5} fill="#e91e63" stroke="white" strokeWidth={2} />
                   }
                   return <circle key={props.key} cx={cx} cy={cyY} r={2.5} fill="#e91e63" />
                 }}
@@ -527,7 +633,8 @@ export default function SalesDashboard() {
               브랜드 매출 현황
               {perfData?.meta.monthLabel && (
                 <span className="ml-2 font-normal text-gray-400">
-                  {perfData.meta.monthLabel} · 전주 {perfData.meta.cwStart.slice(4,6)}/{perfData.meta.cwStart.slice(6)}~{perfData.meta.cwEnd.slice(4,6)}/{perfData.meta.cwEnd.slice(6)}
+                  {perfData.meta.monthLabel} (전일마감 ~{perfData.meta.monthEnd.slice(4,6)}/{perfData.meta.monthEnd.slice(6)}) · 주간 {perfData.meta.cwLabel}
+                  {selWeekFrom != null && (selWeekTo != null ? ` (W${Math.min(selWeekFrom, selWeekTo)}~W${Math.max(selWeekFrom, selWeekTo)})` : ` (W${selWeekFrom})`)}
                 </span>
               )}
             </h3>
@@ -542,7 +649,7 @@ export default function SalesDashboard() {
           ) : perfTableData ? (
             <div className="overflow-auto flex-1">
               {/* 브랜드별 요약 */}
-              <table className="w-full text-[11px] border-collapse min-w-[1050px]">
+              <table className="w-full text-[11px] border-collapse min-w-[1150px]">
                 <thead className="sticky top-0 z-20">
                   {PERF_GROUP_HEADER}
                   <tr className="bg-gray-50 border-b border-surface-border text-gray-400 font-semibold uppercase tracking-wide">
@@ -556,10 +663,10 @@ export default function SalesDashboard() {
                       onClick={() => handleBrandClick(row.brandcd)}
                       className={cn('border-b border-surface-border cursor-pointer transition-colors',
                         row.bold ? 'bg-blue-50/40 font-semibold hover:bg-blue-100/40' : 'hover:bg-gray-50/50',
-                        selBrand === row.brandcd && !row.bold && 'bg-brand-accent-light')}>
+                        selBrands.has(row.brandcd) && !row.bold && 'bg-brand-accent-light')}>
                       <td className={cn('px-3 py-2 sticky left-0 z-10',
                         row.bold ? 'bg-blue-50/40 font-bold text-gray-900' :
-                        selBrand === row.brandcd ? 'bg-brand-accent-light font-semibold text-gray-900' :
+                        selBrands.has(row.brandcd) ? 'bg-brand-accent-light font-semibold text-gray-900' :
                         'bg-white text-gray-700')}>
                         <span className="flex items-center gap-1.5">
                           {!row.bold && row.brandcd !== 'all' && (
@@ -578,7 +685,7 @@ export default function SalesDashboard() {
               <div className="px-3 py-2 bg-gray-100 border-t-2 border-gray-300">
                 <h3 className="text-xs font-semibold text-gray-700">유통채널별 매출 현황</h3>
               </div>
-              <table className="w-full text-[11px] border-collapse min-w-[1050px]">
+              <table className="w-full text-[11px] border-collapse min-w-[1150px]">
                 <thead className="sticky top-0 z-20">
                   {PERF_GROUP_HEADER}
                   <tr className="bg-gray-50 border-b border-surface-border text-gray-400 font-semibold uppercase tracking-wide">
@@ -589,15 +696,20 @@ export default function SalesDashboard() {
                 <tbody>
                   {perfTableData.chRows.map((row, i) => {
                     const grpColor = CHANNEL_GROUP_COLORS[row.group]
-                    const isSelected = selFilter.type === 'group'
-                      ? row.isGroupTotal && selFilter.group === row.group
-                      : selFilter.type === 'channel'
-                        ? !row.isGroupTotal && (selFilter as { channel: string }).channel === row.channel
-                        : false
+                    // 개별 채널: selChannels에 포함되면 선택
+                    const isSelected = row.isGroupTotal
+                      ? perfTableData.chRows
+                          .filter(r => r.group === row.group && !r.isGroupTotal)
+                          .every(r => selChannels.has(r.channel)) && selChannels.size > 0
+                      : selChannels.has(row.channel)
+                    // 그룹 합계 클릭 시 해당 그룹 내 모든 채널 목록 전달
+                    const grpChannelList = row.isGroupTotal
+                      ? perfTableData.chRows.filter(r => r.group === row.group && !r.isGroupTotal).map(r => r.channel)
+                      : undefined
                     return (
                       <tr key={i}
-                        onClick={() => handleChannelClick(row.group, row.channel, row.isGroupTotal)}
-                        className={cn('border-b border-surface-border cursor-pointer transition-colors',
+                        onClick={() => handleChannelClick(row.group, row.channel, row.isGroupTotal, grpChannelList)}
+                        className={cn('border-b border-surface-border cursor-pointer transition-colors group',
                           row.isGroupTotal ? 'bg-gray-50/60 font-semibold hover:bg-gray-100/60' : 'hover:bg-gray-50/50',
                           isSelected && 'bg-brand-accent-light')}>
                         <td className={cn('px-3 py-2 sticky left-0 z-10',
@@ -609,7 +721,14 @@ export default function SalesDashboard() {
                               <span className="font-semibold text-gray-800">{row.group} 합계</span>
                             </span>
                           ) : (
-                            <span className="text-gray-600 pl-4">{row.channel}</span>
+                            <span className="flex items-center gap-1 text-gray-600 pl-4">
+                            {row.channel}
+                            <button onClick={(e) => handleChannelNavigate(row.channel, e)}
+                              className="opacity-0 group-hover:opacity-100 hover:text-brand-accent transition-opacity ml-auto shrink-0"
+                              title="매장 상세 보기">
+                              <ExternalLink size={10} />
+                            </button>
+                          </span>
                           )}
                         </td>
                         <PerfCells m={row.m} />
@@ -656,12 +775,13 @@ export default function SalesDashboard() {
                           onClick={() => {
                             const next = selItemFilter === item.item ? null : item.item
                             setSelItemFilter(next)
-                            // 베스트 상품 re-fetch (품목 필터)
+                            // 베스트 상품 + 브랜드/채널 테이블 re-fetch (품목 필터)
                             const toDt = year === String(new Date().getFullYear()) ? lastSunday : `${year}1231`
                             const fd = (() => { const d = new Date(); const dow = d.getDay(); const sun = new Date(d); sun.setDate(d.getDate() - (dow === 0 ? 7 : dow)); const mon = new Date(sun); mon.setDate(sun.getDate() - 6); return `${mon.getFullYear()}${String(mon.getMonth()+1).padStart(2,'0')}${String(mon.getDate()).padStart(2,'0')}` })()
-                            const b = selBrand ?? brand
+                            const b = getEffectiveBrand(selBrands)
                             const itemP = next ? `&item=${encodeURIComponent(next)}` : ''
-                            fetch(`/api/sales/products?brand=${b}&year=${year}&toDt=${toDt}&fromDt=${fd}${channelParams(selFilter)}${itemP}`).then(r=>r.json()).then(j=>{setProducts(j.products??[])}).catch(()=>{})
+                            fetch(`/api/sales/products?brand=${b}&year=${year}&toDt=${toDt}&fromDt=${fd}${channelParamsFromSet(selChannels)}${itemP}`).then(r=>r.json()).then(j=>{setProducts(j.products??[])}).catch(()=>{})
+                            fetchPerformance(null, next, true)
                           }}
                           className={cn('border-b border-surface-border/50 cursor-pointer transition-colors',
                             selItemFilter === item.item ? 'bg-emerald-50' : 'hover:bg-surface-subtle')}>
@@ -697,20 +817,20 @@ export default function SalesDashboard() {
                 {BRAND_NAMES[brand] ?? brand}
               </span>
             )}
-            {selWeek && (
-              <span className="text-[10px] bg-brand-accent text-white px-2 py-0.5 rounded-full">W{selWeek}</span>
-            )}
-            {selFilter.type !== 'total' && (
-              <span className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                {selFilter.type === 'group' ? selFilter.group : (selFilter as { channel: string }).channel}
+            {selWeekFrom != null && (
+              <span className="text-[10px] bg-brand-accent text-white px-2 py-0.5 rounded-full">
+                {selWeekTo != null ? `W${Math.min(selWeekFrom, selWeekTo)}~W${Math.max(selWeekFrom, selWeekTo)}` : `W${selWeekFrom}`}
               </span>
             )}
+            {Array.from(selChannels).map(ch => (
+              <span key={ch} className="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">{ch}</span>
+            ))}
             {selProduct && (
               <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">
                 {selProduct.name}
               </span>
             )}
-            {brand === 'all' && selWeek == null && selFilter.type === 'total' && !selProduct && (
+            {brand === 'all' && selWeek == null && selChannels.size === 0 && !selProduct && (
               <span className="text-[10px] text-gray-400">테이블/차트 클릭으로 필터</span>
             )}
           </div>
@@ -736,7 +856,7 @@ export default function SalesDashboard() {
                 <tbody>
                   {products.map((p, i) => {
                     const dc = p.tagTotal > 0 ? (1 - p.saleTotal / p.tagTotal) * 100 : 0
-                    const wow = p.pwRev > 0 ? ((p.cwRev - p.pwRev) / p.pwRev) * 100 : (p.cwRev > 0 ? 100 : null)
+                    const wow = p.pwRev > 0 ? ((p.cwRev - p.pwRev) / p.pwRev) * 100 : null
                     return (
                       <tr key={p.code}
                         onClick={() => setSelProduct(prev => prev?.code === p.code ? null : { code: p.code, name: p.name || p.code })}

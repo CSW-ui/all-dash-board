@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, Search, X, ChevronRight, Send, CheckCircle, Eye, Heart, Users, MessageCircle, TrendingUp } from 'lucide-react'
+import { Plus, Search, X, ChevronRight, Send, CheckCircle, Eye, Heart, Users, MessageCircle, TrendingUp, Sparkles, Loader2, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { fmtNum } from '@/lib/formatters'
 import {
@@ -48,6 +48,18 @@ export default function InfluencerPage() {
   const [creating,  setCreating]  = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [q,            setQ]            = useState('')
+
+  // AI 검색
+  const [aiQuery, setAiQuery] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiResult, setAiResult] = useState<{
+    summary: string
+    searchParams: { hashtags: string[]; platform: string; category: string }
+    scanned: number
+    collected: number
+    influencers: { handle: string; platform: string; followers: number; engagement_rate: number; full_name: string; biography: string; profile_pic_url: string; profile_url: string; posts_last_30d: number }[]
+  } | null>(null)
+  const [aiError, setAiError] = useState<string | null>(null)
   const [filterBrand,  setFilterBrand]  = useState('')
   const [filterStatus, setFilterStatus] = useState('')
   const [filterFrom,   setFilterFrom]   = useState('')
@@ -95,6 +107,26 @@ export default function InfluencerPage() {
       시딩: p.seeding_count,
       게시: p.posted_count,
     }))
+
+  async function handleAiSearch(e: React.FormEvent) {
+    e.preventDefault()
+    if (!aiQuery.trim() || aiLoading) return
+    setAiLoading(true); setAiError(null); setAiResult(null)
+    try {
+      const res = await fetch('/api/influencers/ai-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: aiQuery }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setAiResult(data)
+    } catch (err) {
+      setAiError(String(err))
+    } finally {
+      setAiLoading(false)
+    }
+  }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -279,6 +311,93 @@ export default function InfluencerPage() {
 
         {/* RIGHT: Dashboard */}
         <div className="flex-1 min-w-0 space-y-4">
+
+          {/* AI 인플루언서 검색 */}
+          <div className="bg-gradient-to-r from-violet-50 to-pink-50 rounded-xl border border-violet-200/50 shadow-sm p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles size={14} className="text-violet-500" />
+              <span className="text-xs font-semibold text-gray-700">AI 인플루언서 발굴</span>
+              <span className="text-[10px] text-gray-400">자연어로 원하는 인플루언서를 검색하세요</span>
+            </div>
+            <form onSubmit={handleAiSearch} className="flex gap-2">
+              <input
+                value={aiQuery}
+                onChange={e => setAiQuery(e.target.value)}
+                placeholder="예: 커버낫에 어울리는 20대 남성 스트릿 패션 인플루언서 팔로워 3~10만"
+                className="flex-1 text-xs border border-violet-200 rounded-lg px-3 py-2.5 focus:outline-none focus:border-violet-400 bg-white/80 placeholder:text-gray-400"
+                disabled={aiLoading}
+              />
+              <button type="submit" disabled={aiLoading || !aiQuery.trim()}
+                className="flex items-center gap-1.5 text-xs font-medium bg-violet-600 text-white px-4 py-2.5 rounded-lg hover:bg-violet-700 disabled:opacity-50 transition-colors shrink-0">
+                {aiLoading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                {aiLoading ? '발굴 중... (약 2분)' : '검색'}
+              </button>
+            </form>
+
+            {aiError && (
+              <div className="mt-3 text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{aiError}</div>
+            )}
+
+            {aiResult && (
+              <div className="mt-3 space-y-3">
+                {/* AI 요약 */}
+                <div className="bg-white/80 rounded-lg px-3 py-2.5 border border-violet-100">
+                  <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap">{aiResult.summary}</p>
+                  <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-400">
+                    <span>게시물 {aiResult.scanned}개 스캔</span>
+                    <span>인플루언서 {aiResult.collected}명 발굴</span>
+                    <span>해시태그: {aiResult.searchParams.hashtags.map(h => `#${h}`).join(' ')}</span>
+                  </div>
+                </div>
+
+                {/* 결과 테이블 */}
+                {aiResult.influencers.length > 0 && (
+                  <div className="bg-white rounded-lg border border-violet-100 overflow-hidden">
+                    <table className="w-full text-[11px]">
+                      <thead>
+                        <tr className="bg-violet-50/50 border-b border-violet-100 text-gray-500 font-semibold">
+                          <th className="text-left px-3 py-2">인플루언서</th>
+                          <th className="text-right px-2 py-2">팔로워</th>
+                          <th className="text-right px-2 py-2">참여율</th>
+                          <th className="text-right px-2 py-2">최근 게시</th>
+                          <th className="text-center px-2 py-2">프로필</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {aiResult.influencers.map((inf, i) => (
+                          <tr key={inf.handle} className="border-b border-gray-50 hover:bg-violet-50/30">
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                {inf.profile_pic_url && (
+                                  <img src={inf.profile_pic_url} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" />
+                                )}
+                                <div className="min-w-0">
+                                  <p className="font-semibold text-gray-800 truncate">{inf.handle}</p>
+                                  {inf.full_name && <p className="text-[10px] text-gray-400 truncate">{inf.full_name}</p>}
+                                </div>
+                              </div>
+                            </td>
+                            <td className="text-right px-2 py-2 font-mono text-gray-700">{(inf.followers / 10000).toFixed(1)}만</td>
+                            <td className={cn('text-right px-2 py-2 font-semibold', inf.engagement_rate >= 5 ? 'text-emerald-600' : inf.engagement_rate >= 2 ? 'text-amber-600' : 'text-gray-500')}>
+                              {inf.engagement_rate}%
+                            </td>
+                            <td className="text-right px-2 py-2 text-gray-600">{inf.posts_last_30d}건</td>
+                            <td className="text-center px-2 py-2">
+                              <a href={inf.profile_url} target="_blank" rel="noreferrer"
+                                className="text-violet-500 hover:text-violet-700">
+                                <ExternalLink size={12} />
+                              </a>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <KpiCard icon={<Send size={14} />}        label="총 시딩"   value={totalSeedings}            color="text-blue-600"    bg="bg-blue-50" />
             <KpiCard icon={<CheckCircle size={14} />} label="게시 완료" value={totalPosted}               color="text-emerald-600" bg="bg-emerald-50" />

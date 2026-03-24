@@ -14,6 +14,7 @@ export async function GET(req: Request) {
   const toDt         = searchParams.get('toDt')  || '20261231'
   const channelGroup = searchParams.get('channelGroup') || ''  // 오프라인|온라인|해외
   const channel      = searchParams.get('channel') || ''       // 특정 채널명 (우선순위↑)
+  const channels     = searchParams.get('channels') || ''     // 다중 채널 (콤마 구분)
 
   const year    = toDt.slice(0, 4)
   const lyYear  = String(parseInt(year) - 1)
@@ -29,6 +30,11 @@ export async function GET(req: Request) {
   // 채널 필터 SQL 생성
   function buildChannelFilter(tableAlias = ''): string {
     const col = tableAlias ? `${tableAlias}.SHOPTYPENM` : 'SHOPTYPENM'
+    // 다중 채널 (콤마 구분)
+    if (channels) {
+      const chList = channels.split(',').map(c => `'${c.trim().replace(/'/g, "''")}'`).join(',')
+      return `AND ${col} IN (${chList})`
+    }
     if (channel) return `AND ${col} = '${channel.replace(/'/g, "''")}'`
     if (channelGroup === '해외') {
       return `AND (${col} LIKE '%해외%' OR ${col} LIKE '%global%' OR ${col} LIKE '%수출%' OR ${col} LIKE '%export%')`

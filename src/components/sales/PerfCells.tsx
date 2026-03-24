@@ -21,6 +21,8 @@ export function PerfCells({ m }: { m: PerfMetrics }) {
       <td className="px-1 py-2 text-right font-mono text-gray-600 border-l border-gray-100">{fmtM(m.cwRev)}</td>
       <td className={cn('px-2 py-2 text-right font-mono', m.wow >= 0 ? 'text-emerald-600' : 'text-red-500')}>{fmtM(m.wow)}</td>
       <td className={cn('px-2 py-2 text-right', m.wowPct == null ? 'text-gray-300' : m.wowPct >= 0 ? 'text-emerald-600' : 'text-red-500')}>{fmtPctI(m.wowPct)}</td>
+      <td className={cn('px-2 py-2 text-right font-mono', m.cwYoy >= 0 ? 'text-emerald-600' : 'text-red-500')}>{fmtM(m.cwYoy)}</td>
+      <td className={cn('px-2 py-2 text-right', m.cwYoyPct == null ? 'text-gray-300' : m.cwYoyPct >= 0 ? 'text-emerald-600' : 'text-red-500')}>{fmtPctI(m.cwYoyPct)}</td>
       <td className="px-1 py-2 text-right text-gray-600">{fmtPctF(m.cwDc)}</td>
       <td className="px-1 py-2 text-right text-gray-600">{fmtPctF(m.cwCogs)}</td>
       <td className={cn('px-2 py-2 text-right font-mono border-l border-gray-100', m.yoy >= 0 ? 'text-emerald-600' : 'text-red-500')}>{fmtM(m.yoy)}</td>
@@ -51,7 +53,7 @@ export const PERF_GROUP_HEADER = (
   <tr className="bg-gray-100 border-b border-gray-200 text-[10px] text-gray-500 font-bold uppercase">
     <th className="sticky left-0 bg-gray-100 z-30"></th>
     <th colSpan={5} className="text-center py-1">월 누적</th>
-    <th colSpan={5} className="text-center py-1 border-l border-gray-200">전주 실적</th>
+    <th colSpan={7} className="text-center py-1 border-l border-gray-200">주간 실적</th>
     <th colSpan={4} className="text-center py-1 border-l border-gray-200">전년대비 (월 누적)</th>
     <th colSpan={3} className="text-center py-1 border-l border-gray-200">매출이익 (월 누적)</th>
   </tr>
@@ -64,9 +66,11 @@ export const PERF_HEADER_COLS = (
     <th className="text-right px-1 py-2 w-[42px]">ACH%</th>
     <th className="text-right px-1 py-2 w-[40px]">DC%</th>
     <th className="text-right px-1 py-2 w-[48px]">COGS%</th>
-    <th className="text-right px-1 py-2 w-[62px] border-l border-gray-200">전주실적</th>
+    <th className="text-right px-1 py-2 w-[62px] border-l border-gray-200">주간실적</th>
     <th className="text-right px-1 py-2 w-[52px]">WoW</th>
     <th className="text-right px-1 py-2 w-[44px]">WoW%</th>
+    <th className="text-right px-1 py-2 w-[52px]">YoY</th>
+    <th className="text-right px-1 py-2 w-[44px]">YoY%</th>
     <th className="text-right px-1 py-2 w-[40px]">DC%</th>
     <th className="text-right px-1 py-2 w-[48px]">COGS%</th>
     <th className="text-right px-1 py-2 w-[52px] border-l border-gray-200">YoY</th>

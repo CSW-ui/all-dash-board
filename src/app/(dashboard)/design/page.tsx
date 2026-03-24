@@ -1,10 +1,12 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import {
-  Paintbrush, Search, Filter, X, ClipboardPaste, Download, Sparkles, ChevronDown, ChevronUp
+  Search, Filter, X, Sparkles, Loader2,
+  ChevronLeft, ChevronRight, Copy, Check
 } from 'lucide-react'
 import { BRAND_NAMES } from '@/lib/constants'
+import { AiDescriptionModal } from '@/components/design/AiDescriptionModal'
 
 type ProductItem = {
   stylecd: string; stylenm: string; brandcd: string; colorcd: string;
@@ -13,6 +15,36 @@ type ProductItem = {
 }
 
 const FIT_OPTIONS = ['레귤러핏', '세미 오버핏', '오버핏', '슬림핏', '릴렉스핏']
+const PAGE_SIZE = 50
+
+type StatusFilter = 'all' | 'empty' | 'done'
+type CellRef = { row: number; col: number }
+
+// 컬럼 정의
+const COLUMNS = [
+  { key: 'product_name_kr', label: '제품명(한)', w: 130, type: 'text', editable: true },
+  { key: 'product_name_en', label: '제품명(영)', w: 130, type: 'text', editable: true },
+  { key: 'fit_type', label: '핏', w: 100, type: 'select', editable: true },
+  { key: 'material_mix', label: '혼용율', w: 140, type: 'text', editable: true },
+  { key: 'product_description', label: '상품설명', w: 200, type: 'textarea', editable: true },
+  { key: 'selling_points', label: '셀링포인트', w: 200, type: 'textarea', editable: true },
+  { key: 'designer_name', label: '디자이너', w: 80, type: 'text', editable: true },
+  // AI 자동 생성 컬럼
+  { key: '_ai_material', label: '소재분석(AI)', w: 220, type: 'ai', editable: false },
+  { key: '_ai_description', label: '상품설명(AI)', w: 250, type: 'ai', editable: false },
+  { key: '_ai_selling', label: '셀링포인트(AI)', w: 250, type: 'ai', editable: false },
+  { key: '_ai_care', label: '관리팁(AI)', w: 180, type: 'ai', editable: false },
+] as const
+
+type ColKey = typeof COLUMNS[number]['key']
+
+// AI 결과 타입
+type AiResult = {
+  material_analysis: string
+  description_rewrite: string
+  selling_points_rewrite: string[]
+  care_tip: string
+}
 
 export default function DesignPage() {
   const [items, setItems] = useState<ProductItem[]>([])
@@ -22,19 +54,23 @@ export default function DesignPage() {
   const [year, setYear] = useState('2026')
   const [season, setSeason] = useState('')
   const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [page, setPage] = useState(0)
 
-  // 붙여넣기
-  const [showPaste, setShowPaste] = useState(false)
-  const [pasteText, setPasteText] = useState('')
-  const [pasteField, setPasteField] = useState<string>('product_description')
-  const [pasteResult, setPasteResult] = useState<{ matched: number; fail: number } | null>(null)
+  // 셀 편집
+  const [editCell, setEditCell] = useState<CellRef | null>(null)
+  const [editValue, setEditValue] = useState('')
 
-  // 인라인 편집 확장
-  const [expandedRow, setExpandedRow] = useState<string | null>(null)
+  // AI 상태: key = "stylecd_colorcd"
+  const [aiResults, setAiResults] = useState<Record<string, AiResult>>({})
+  const [aiLoading, setAiLoading] = useState<Set<string>>(new Set())
+  const [copied, setCopied] = useState<string | null>(null)
 
-  // AI 일괄 생성
-  const [aiLoading, setAiLoading] = useState(false)
+  // AI 일괄
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [showAiModal, setShowAiModal] = useState(false)
+
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -45,13 +81,26 @@ export default function DesignPage() {
       if (!data.error) {
         setItems(data.products || [])
         setSearched(true)
+        setEditCell(null)
+        setPage(0)
       }
     } catch (err) { console.error(err) }
     finally { setLoading(false) }
   }, [brand, year, season])
 
-  // 검색 필터
+  const getManual = (p: ProductItem, key: string): string => {
+    if (key === 'selling_points') {
+      const arr = (p.manual as Record<string, string[]>)?.[key] || []
+      return arr.join('\n')
+    }
+    return (p.manual as Record<string, string>)?.[key] || ''
+  }
+
+  // 필터
   const filtered = items.filter(p => {
+    const hasDesc = !!(p.manual as Record<string, string>)?.product_description
+    if (statusFilter === 'empty' && hasDesc) return false
+    if (statusFilter === 'done' && !hasDesc) return false
     if (!search) return true
     const terms = search.split(/[,\n\t\r;]+/).map(s => s.trim().toLowerCase()).filter(Boolean)
     if (terms.length === 0) return true
@@ -62,300 +111,421 @@ export default function DesignPage() {
     )
   })
 
-  // 저장
-  const saveField = async (stylecd: string, colorcd: string, brandcd: string, field: string, value: unknown) => {
-    await fetch('/api/online/product', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stylecd, colorcd, brandcd, [field]: value }),
-    })
-  }
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+  const doneCount = items.filter(p => !!(p.manual as Record<string, string>)?.product_description).length
+  const progressPct = items.length > 0 ? Math.round((doneCount / items.length) * 100) : 0
 
-  // 붙여넣기 처리
-  const handlePaste = async () => {
-    if (!pasteText.trim()) return
-    const lines = pasteText.split('\n').filter(l => l.trim())
-    const updates: Record<string, unknown>[] = []
+  // AI 호출
+  const triggerAi = useCallback(async (p: ProductItem) => {
+    const key = `${p.stylecd}_${p.colorcd}`
+    const desc = getManual(p, 'product_description')
+    const sp = (p.manual as Record<string, string[]>)?.selling_points || []
+    const mix = getManual(p, 'material_mix')
 
-    for (const line of lines) {
-      const cols = line.split('\t').map(s => s.trim())
-      let stylecd = '', colorcd = '', value = ''
+    if (!desc && sp.length === 0 && !mix) return
 
-      if (cols.length >= 3) {
-        stylecd = cols[0]; colorcd = cols[1]; value = cols[2]
-      } else if (cols.length === 2) {
-        const code = cols[0]; value = cols[1]
-        const found = items.find(i => (i.stylecd + i.colorcd).toLowerCase() === code.toLowerCase())
-        if (found) { stylecd = found.stylecd; colorcd = found.colorcd }
-        else { stylecd = code.slice(0, -2); colorcd = code.slice(-2) }
-      }
+    setAiLoading(prev => new Set(prev).add(key))
 
-      if (stylecd && value) {
-        const item = items.find(i => i.stylecd === stylecd && i.colorcd === colorcd)
-        updates.push({
-          stylecd, colorcd, brandcd: item?.brandcd || stylecd.substring(0, 2),
-          [pasteField]: pasteField === 'selling_points' ? value.split('|').map(s => s.trim()) : value,
-        })
-      }
-    }
-
-    if (updates.length === 0) return
     try {
-      const res = await fetch('/api/online/product', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: updates }),
-      })
-      const data = await res.json()
-      setPasteResult({ matched: data.successCount || 0, fail: data.failCount || 0 })
-      setPasteText('')
-      fetchData()
-    } catch (err) { console.error(err) }
-  }
-
-  // AI 일괄 생성
-  const handleAiBulk = async () => {
-    if (selected.size === 0) return
-    setAiLoading(true)
-    try {
-      const selProducts = filtered
-        .filter(p => selected.has(`${p.stylecd}_${p.colorcd}`))
-        .map(p => ({
-          stylenm: p.stylenm, itemnm: p.itemnm, colornm: p.colornm,
-          tagprice: p.tagprice,
-          material_mix: (p.manual as Record<string, string>)?.material_mix || '',
-          brandcd: p.brandcd,
-        }))
-
-      const res = await fetch('/api/online/ai-description', {
+      const res = await fetch('/api/online/ai-rewrite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ products: selProducts }),
+        body: JSON.stringify({
+          product_description: desc,
+          selling_points: sp,
+          material_mix: mix,
+          stylenm: p.stylenm,
+          itemnm: p.itemnm,
+          brandcd: p.brandcd,
+          tagprice: p.tagprice,
+          fit_type: getManual(p, 'fit_type'),
+        }),
       })
       const data = await res.json()
-
-      if (data.results) {
-        const prods = filtered.filter(p => selected.has(`${p.stylecd}_${p.colorcd}`))
-        const updates = data.results
-          .filter((r: { success: boolean }) => r.success)
-          .map((r: { description: string; sellingPoints: string[]; seoTags: string[] }, i: number) => {
-            const prod = prods[i]
-            if (!prod) return null
-            return {
-              stylecd: prod.stylecd, colorcd: prod.colorcd, brandcd: prod.brandcd,
-              product_description: r.description,
-              selling_points: r.sellingPoints,
-              seo_tags: r.seoTags,
-            }
-          }).filter(Boolean)
-
-        if (updates.length > 0) {
-          await fetch('/api/online/product', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: updates }),
-          })
-        }
-        alert(`AI 설명 생성 완료: ${data.results.filter((r: { success: boolean }) => r.success).length}건`)
-        setSelected(new Set())
-        fetchData()
+      if (!data.error) {
+        setAiResults(prev => ({ ...prev, [key]: data }))
       }
     } catch (err) { console.error(err) }
-    finally { setAiLoading(false) }
-  }
-
-  const toggleAll = () => {
-    if (selected.size === filtered.length) setSelected(new Set())
-    else setSelected(new Set(filtered.map(p => `${p.stylecd}_${p.colorcd}`)))
-  }
-
-  const getManual = (p: ProductItem, key: string) => (p.manual as Record<string, string>)?.[key] || ''
-
-  // 엑셀 여러 행 붙여넣기: 현재 행부터 아래로 분배
-  const handleCellPaste = async (e: React.ClipboardEvent, rowIdx: number, field: string) => {
-    const text = e.clipboardData.getData('text')
-    const lines = text.split('\n').map(s => s.trim()).filter(Boolean)
-    if (lines.length <= 1) return // 한 줄이면 기본 동작
-
-    e.preventDefault() // 기본 붙여넣기 막기
-
-    const updates: Record<string, unknown>[] = []
-    for (let i = 0; i < lines.length; i++) {
-      const targetIdx = rowIdx + i
-      if (targetIdx >= filtered.length) break
-      const p = filtered[targetIdx]
-      const value = field === 'selling_points'
-        ? lines[i].split('|').map(s => s.trim()).filter(Boolean)
-        : lines[i]
-      updates.push({
-        stylecd: p.stylecd, colorcd: p.colorcd, brandcd: p.brandcd,
-        [field]: value,
+    finally {
+      setAiLoading(prev => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
       })
     }
+  }, [])
+
+  // 셀 편집 시작
+  const startEdit = (row: number, col: number) => {
+    if (!COLUMNS[col].editable) return
+    if (editCell) commitEdit(false)
+    const p = paged[row]
+    if (!p) return
+    setEditCell({ row, col })
+    setEditValue(getManual(p, COLUMNS[col].key))
+    setTimeout(() => inputRef.current?.focus(), 0)
+  }
+
+  // 셀 편집 확정
+  const commitEdit = useCallback(async (shouldTriggerAi = true) => {
+    if (!editCell) return
+    const p = paged[editCell.row]
+    if (!p) return
+
+    const col = COLUMNS[editCell.col]
+    const oldValue = getManual(p, col.key)
+
+    if (editValue !== oldValue) {
+      // 로컬 업데이트
+      const globalIdx = items.findIndex(i => i.stylecd === p.stylecd && i.colorcd === p.colorcd)
+      if (globalIdx >= 0) {
+        const updated = [...items]
+        const manual = { ...(updated[globalIdx].manual || {}) } as Record<string, unknown>
+        if (col.key === 'selling_points') {
+          manual[col.key] = editValue.split('\n').map(s => s.trim()).filter(Boolean)
+        } else {
+          manual[col.key] = editValue
+        }
+        updated[globalIdx] = { ...updated[globalIdx], manual }
+        setItems(updated)
+
+        // 서버 저장
+        const saveValue = col.key === 'selling_points'
+          ? editValue.split('\n').map(s => s.trim()).filter(Boolean)
+          : editValue
+
+        fetch('/api/online/product', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            stylecd: p.stylecd, colorcd: p.colorcd, brandcd: p.brandcd,
+            [col.key]: saveValue,
+          }),
+        }).catch(console.error)
+
+        // AI 트리거: 상품설명, 셀링포인트, 혼용율 변경 시 자동 실행
+        if (shouldTriggerAi && ['product_description', 'selling_points', 'material_mix'].includes(col.key)) {
+          const updatedProduct = updated[globalIdx]
+          setTimeout(() => triggerAi(updatedProduct), 100)
+        }
+      }
+    }
+
+    setEditCell(null)
+  }, [editCell, editValue, paged, items, triggerAi])
+
+  // 키보드
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!editCell) return
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      commitEdit()
+      const dir = e.shiftKey ? -1 : 1
+      let nextCol = editCell.col + dir
+      // 편집 불가 컬럼 건너뛰기
+      while (nextCol >= 0 && nextCol < COLUMNS.length && !COLUMNS[nextCol].editable) nextCol += dir
+      if (nextCol >= 0 && nextCol < COLUMNS.length) {
+        setTimeout(() => startEdit(editCell.row, nextCol), 0)
+      } else if (dir > 0 && editCell.row < paged.length - 1) {
+        setTimeout(() => startEdit(editCell.row + 1, 0), 0)
+      }
+    } else if (e.key === 'Enter' && !e.shiftKey && COLUMNS[editCell.col].type !== 'textarea') {
+      e.preventDefault()
+      commitEdit()
+      if (editCell.row < paged.length - 1) {
+        setTimeout(() => startEdit(editCell.row + 1, editCell.col), 0)
+      }
+    } else if (e.key === 'Escape') {
+      setEditCell(null)
+    }
+  }
+
+  // 붙여넣기
+  const handleTablePaste = useCallback(async (e: React.ClipboardEvent) => {
+    if (!editCell) return
+    const text = e.clipboardData.getData('text')
+    const lines = text.split('\n').map(s => s.trim()).filter(Boolean)
+    if (lines.length <= 1) return
+
+    e.preventDefault()
+    const updates: Record<string, unknown>[] = []
+    const updatedItems = [...items]
+
+    for (let i = 0; i < lines.length; i++) {
+      const rowIdx = editCell.row + i
+      if (rowIdx >= paged.length) break
+      const p = paged[rowIdx]
+      const cols = lines[i].split('\t')
+
+      for (let c = 0; c < cols.length; c++) {
+        const targetCol = editCell.col + c
+        if (targetCol >= COLUMNS.length || !COLUMNS[targetCol].editable) break
+        const targetKey = COLUMNS[targetCol].key
+        const val = cols[c].trim()
+        const saveVal = targetKey === 'selling_points'
+          ? val.split('|').map(s => s.trim()).filter(Boolean) : val
+
+        const globalIdx = updatedItems.findIndex(it => it.stylecd === p.stylecd && it.colorcd === p.colorcd)
+        if (globalIdx >= 0) {
+          const manual = { ...(updatedItems[globalIdx].manual || {}) } as Record<string, unknown>
+          manual[targetKey] = saveVal
+          updatedItems[globalIdx] = { ...updatedItems[globalIdx], manual }
+        }
+        if (c === 0) {
+          updates.push({ stylecd: p.stylecd, colorcd: p.colorcd, brandcd: p.brandcd, [targetKey]: saveVal })
+        } else {
+          const last = updates[updates.length - 1]
+          if (last) (last as Record<string, unknown>)[targetKey] = saveVal
+        }
+      }
+    }
+
+    setItems(updatedItems)
+    setEditCell(null)
 
     if (updates.length > 0) {
       await fetch('/api/online/product', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items: updates }),
       })
-      alert(`${updates.length}건 붙여넣기 완료`)
-      fetchData()
     }
+  }, [editCell, paged, items])
+
+  // 복사
+  const handleCopy = (text: string, key: string) => {
+    navigator.clipboard.writeText(text)
+    setCopied(key)
+    setTimeout(() => setCopied(null), 1500)
+  }
+
+  // AI 일괄 저장
+  const handleAiSave = async (updates: Record<string, unknown>[]) => {
+    await fetch('/api/online/product', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: updates }),
+    })
+    fetchData()
+  }
+
+  const toggleAll = () => {
+    if (selected.size === paged.length) setSelected(new Set())
+    else setSelected(new Set(paged.map(p => `${p.stylecd}_${p.colorcd}`)))
+  }
+
+  // 편집 가능 셀 렌더링
+  const renderEditableCell = (rowIdx: number, colIdx: number) => {
+    const col = COLUMNS[colIdx]
+    const p = paged[rowIdx]
+    if (!p) return null
+    const isEditing = editCell?.row === rowIdx && editCell?.col === colIdx
+    const value = getManual(p, col.key)
+
+    if (isEditing) {
+      if (col.type === 'select') {
+        return (
+          <select ref={inputRef as React.RefObject<HTMLSelectElement>}
+            value={editValue} onChange={e => setEditValue(e.target.value)}
+            onBlur={() => commitEdit()} onKeyDown={handleKeyDown}
+            className="w-full h-full text-xs border-2 border-violet-400 rounded px-1.5 py-1 bg-white focus:outline-none">
+            <option value="">선택</option>
+            {FIT_OPTIONS.map(f => <option key={f} value={f}>{f}</option>)}
+          </select>
+        )
+      }
+      if (col.type === 'textarea') {
+        return (
+          <textarea ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+            value={editValue} onChange={e => setEditValue(e.target.value)}
+            onBlur={() => commitEdit()} onKeyDown={handleKeyDown} onPaste={handleTablePaste}
+            rows={4}
+            className="w-full text-xs border-2 border-violet-400 rounded px-1.5 py-1 bg-white focus:outline-none resize-none leading-relaxed" />
+        )
+      }
+      return (
+        <input ref={inputRef as React.RefObject<HTMLInputElement>} type="text"
+          value={editValue} onChange={e => setEditValue(e.target.value)}
+          onBlur={() => commitEdit()} onKeyDown={handleKeyDown} onPaste={handleTablePaste}
+          className="w-full h-full text-xs border-2 border-violet-400 rounded px-1.5 py-1 bg-white focus:outline-none" />
+      )
+    }
+
+    const displayValue = col.key === 'selling_points'
+      ? (value.split('\n').filter(Boolean).length > 0 ? `${value.split('\n').filter(Boolean).length}개` : '')
+      : value
+
+    return (
+      <div onClick={() => startEdit(rowIdx, colIdx)}
+        className={`w-full h-full px-1.5 py-1.5 cursor-cell text-xs truncate rounded hover:bg-violet-50 ${!displayValue ? 'text-gray-300' : 'text-gray-800'}`}
+        title={value}>
+        {displayValue || '—'}
+      </div>
+    )
+  }
+
+  // AI 컬럼 렌더링
+  const renderAiCell = (rowIdx: number, colKey: string) => {
+    const p = paged[rowIdx]
+    if (!p) return null
+    const key = `${p.stylecd}_${p.colorcd}`
+    const isLoading = aiLoading.has(key)
+    const ai = aiResults[key]
+
+    if (isLoading) {
+      return (
+        <div className="flex items-center gap-1 px-1.5 py-1.5 text-[10px] text-violet-500">
+          <Loader2 className="w-3 h-3 animate-spin" /> 생성중...
+        </div>
+      )
+    }
+
+    if (!ai) {
+      return <div className="px-1.5 py-1.5 text-[10px] text-gray-300">—</div>
+    }
+
+    let text = ''
+    let copyKey = ''
+    if (colKey === '_ai_material') { text = ai.material_analysis; copyKey = `${key}_mat` }
+    else if (colKey === '_ai_description') { text = ai.description_rewrite; copyKey = `${key}_desc` }
+    else if (colKey === '_ai_selling') { text = ai.selling_points_rewrite.join('\n'); copyKey = `${key}_sp` }
+    else if (colKey === '_ai_care') { text = ai.care_tip; copyKey = `${key}_care` }
+
+    if (!text) return <div className="px-1.5 py-1.5 text-[10px] text-gray-300">—</div>
+
+    return (
+      <div className="group relative px-1.5 py-1.5">
+        <div className="text-[11px] text-gray-700 leading-relaxed line-clamp-3 whitespace-pre-wrap" title={text}>
+          {text}
+        </div>
+        <button
+          onClick={() => handleCopy(text, copyKey)}
+          className="absolute top-1 right-1 p-0.5 rounded bg-white/80 border border-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+          title="복사">
+          {copied === copyKey ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3 text-gray-400" />}
+        </button>
+      </div>
+    )
   }
 
   return (
-    <div className="p-6 space-y-6 animate-fade-in">
+    <div className="p-4 animate-fade-in h-[calc(100vh-64px)] flex flex-col">
       {/* 헤더 */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">디자인 상품정보 입력</h1>
-          <p className="text-sm text-gray-500 mt-1">상품설명 · 셀링포인트 · 핏 · AI 자동생성</p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={() => setShowPaste(!showPaste)}
-            className={`flex items-center gap-1.5 px-3 py-2 text-sm border rounded-lg ${
-              showPaste ? 'bg-violet-50 border-violet-300 text-violet-700' : 'border-gray-300 hover:bg-gray-50'
-            }`}>
-            <ClipboardPaste className="w-4 h-4" /> 붙여넣기
-          </button>
-        </div>
-      </div>
-
-      {/* 붙여넣기 패널 */}
-      {showPaste && (
-        <div className="bg-white rounded-xl border-2 border-violet-200 p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-800">엑셀 붙여넣기</h3>
-            <button onClick={() => { setShowPaste(false); setPasteResult(null) }}
-              className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+      <div className="shrink-0 space-y-2 mb-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">디자인 상품정보 입력</h1>
+            <p className="text-xs text-gray-500 mt-0.5">
+              셀 클릭 → 편집 · Tab 이동 · 상품설명/셀링포인트/혼용율 입력 시 AI 자동 생성
+            </p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-500">입력할 항목:</span>
-            <select value={pasteField} onChange={e => setPasteField(e.target.value)}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-1.5">
-              <option value="product_description">상품설명 (디자인팀)</option>
-              <option value="product_description_online">상품설명 (온라인팀 문장형)</option>
-              <option value="selling_points">셀링포인트 (|로 구분)</option>
-              <option value="fit_type">핏</option>
-              <option value="product_name_kr">제품명 (한글)</option>
-              <option value="product_name_en">제품명 (영어)</option>
-              <option value="designer_name">담당 디자이너</option>
+          {selected.size > 0 && (
+            <button onClick={() => setShowAiModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-600 text-white rounded-lg hover:bg-violet-700">
+              <Sparkles className="w-3.5 h-3.5" /> AI 일괄생성 ({selected.size})
+            </button>
+          )}
+        </div>
+
+        {/* 필터 */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 bg-white rounded-lg border border-gray-200 px-2 py-1.5">
+            <Filter className="w-3.5 h-3.5 text-gray-400" />
+            <select value={brand} onChange={e => setBrand(e.target.value)}
+              className="text-xs border-none focus:ring-0 bg-transparent">
+              <option value="all">전체 브랜드</option>
+              {Object.entries(BRAND_NAMES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </div>
-          <textarea value={pasteText} onChange={e => setPasteText(e.target.value)}
-            placeholder={"품번\t컬러코드\t상품설명\nCO2601CR01\tBK\t레귤러 핏으로 착용되며..."}
-            rows={5}
-            className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 font-mono resize-none" />
-          <div className="flex items-center gap-3">
-            <button onClick={handlePaste} disabled={!pasteText.trim()}
-              className="px-4 py-2 text-sm bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50">적용</button>
-            {pasteResult && (
-              <span className="text-sm text-gray-600">
-                {pasteResult.matched}건 적용{pasteResult.fail > 0 && `, ${pasteResult.fail}건 실패`}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 필터 */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2 bg-white rounded-lg border border-gray-200 px-3 py-2">
-          <Filter className="w-4 h-4 text-gray-400" />
-          <select value={brand} onChange={e => setBrand(e.target.value)}
-            className="text-sm border-none focus:ring-0 bg-transparent">
-            <option value="all">전체 브랜드</option>
-            {Object.entries(BRAND_NAMES).map(([k, v]) => (
-              <option key={k} value={k}>{v}</option>
-            ))}
+          <select value={year} onChange={e => setYear(e.target.value)}
+            className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white">
+            <option value="2026">2026</option><option value="2025">2025</option>
           </select>
-        </div>
-        <select value={year} onChange={e => setYear(e.target.value)}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white">
-          <option value="2026">2026</option><option value="2025">2025</option>
-        </select>
-        <select value={season} onChange={e => setSeason(e.target.value)}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white">
-          <option value="">전체 시즌</option>
-          <option value="봄">봄</option><option value="여름">여름</option>
-          <option value="가을">가을</option><option value="겨울">겨울</option>
-        </select>
-        <button onClick={fetchData}
-          className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-800 font-medium">조회</button>
+          <select value={season} onChange={e => setSeason(e.target.value)}
+            className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white">
+            <option value="">전체 시즌</option>
+            <option value="봄">봄</option><option value="여름">여름</option>
+            <option value="가을">가을</option><option value="겨울">겨울</option>
+          </select>
+          <button onClick={fetchData}
+            className="px-3 py-1.5 text-xs bg-gray-900 text-white rounded-lg hover:bg-gray-800 font-medium">조회</button>
 
-        <div className="flex items-start gap-2 bg-white rounded-lg border border-gray-200 px-3 py-2 flex-1 max-w-md">
-          <Search className="w-4 h-4 text-gray-400 mt-0.5" />
-          <textarea placeholder="품번, 상품명 검색 (여러개 붙여넣기 가능)"
-            value={search} onChange={e => setSearch(e.target.value)}
-            rows={search.includes('\n') ? 3 : 1}
-            className="text-sm border-none focus:ring-0 bg-transparent w-full resize-none leading-5" />
-          {search && <button onClick={() => setSearch('')}><X className="w-3.5 h-3.5 text-gray-400" /></button>}
-        </div>
-
-        {selected.size > 0 && (
-          <div className="flex items-center gap-2 ml-auto">
-            <span className="text-sm text-gray-600">{selected.size}개 선택</span>
-            <button onClick={handleAiBulk} disabled={aiLoading}
-              className="flex items-center gap-1.5 px-3 py-2 text-sm bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50">
-              <Sparkles className="w-4 h-4" /> {aiLoading ? 'AI 생성 중...' : 'AI 설명 일괄 생성'}
-            </button>
+          <div className="flex items-center gap-1.5 bg-white rounded-lg border border-gray-200 px-2 py-1.5 flex-1 max-w-xs">
+            <Search className="w-3.5 h-3.5 text-gray-400" />
+            <input placeholder="품번, 상품명 검색" value={search}
+              onChange={e => { setSearch(e.target.value); setPage(0) }}
+              className="text-xs border-none focus:ring-0 bg-transparent w-full" />
+            {search && <button onClick={() => setSearch('')}><X className="w-3 h-3 text-gray-400" /></button>}
           </div>
-        )}
+
+          {/* 상태 필터 */}
+          <div className="flex bg-gray-100 rounded-lg p-0.5 gap-0.5">
+            {([['all', '전체'], ['empty', '미입력'], ['done', '완료']] as [StatusFilter, string][]).map(([key, label]) => (
+              <button key={key}
+                onClick={() => { setStatusFilter(key); setPage(0) }}
+                className={`px-2.5 py-1 text-[10px] rounded-md font-medium transition-colors ${
+                  statusFilter === key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {searched && items.length > 0 && (
+            <div className="flex items-center gap-2 ml-auto">
+              <div className="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${progressPct}%` }} />
+              </div>
+              <span className="text-[10px] text-gray-500">{doneCount}/{items.length} ({progressPct}%)</span>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* 상품 리스트 */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        {/* 상단 건수 */}
-        <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-          <span className="text-xs text-gray-600">
-            총 <b>{filtered.length}</b>/{items.length} 건
-          </span>
-          <span className="text-xs text-gray-500">
-            입력완료 {filtered.filter(p => getManual(p, 'product_description')).length}건 ·
-            미입력 {filtered.filter(p => !getManual(p, 'product_description')).length}건
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-gray-200 bg-white">
-                <th className="px-2 py-2 w-8">
+      {/* 테이블 */}
+      <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col overflow-hidden min-h-0">
+        <div className="flex-1 overflow-auto">
+          <table className="text-xs border-collapse" style={{ minWidth: '2000px' }}>
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="px-1 py-2 w-8 sticky left-0 bg-gray-50 z-20 border-r border-gray-200">
                   <input type="checkbox"
-                    checked={selected.size === filtered.length && filtered.length > 0}
+                    checked={selected.size === paged.length && paged.length > 0}
                     onChange={toggleAll} className="rounded border-gray-300" />
                 </th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">스타일넘버</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">상품명</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">컬러</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">상태</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">제품명(한)</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">제품명(영)</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">핏</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">상품설명</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">셀링포인트</th>
-                <th className="px-2 py-2 text-left font-semibold text-gray-600">디자이너</th>
+                <th className="px-2 py-2 text-left font-semibold text-gray-500 w-[100px] sticky left-8 bg-gray-50 z-20 border-r border-gray-200">품번</th>
+                <th className="px-2 py-2 text-left font-semibold text-gray-500 w-[150px]">상품명</th>
+                <th className="px-2 py-2 text-left font-semibold text-gray-500 w-[70px]">컬러</th>
+                {COLUMNS.map(col => (
+                  <th key={col.key}
+                    className={`px-2 py-2 text-left font-semibold ${col.type === 'ai' ? 'text-violet-600 bg-violet-50/50' : 'text-gray-600'}`}
+                    style={{ width: col.w, minWidth: col.w }}>
+                    {col.type === 'ai' && <Sparkles className="w-3 h-3 inline mr-1" />}
+                    {col.label}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={10} className="text-center py-16 text-gray-400">로딩 중...</td></tr>
+                <tr><td colSpan={4 + COLUMNS.length} className="text-center py-16 text-gray-400">
+                  <Loader2 className="w-4 h-4 animate-spin inline mr-2" />로딩 중...
+                </td></tr>
               ) : !searched ? (
-                <tr><td colSpan={10} className="text-center py-16 text-gray-400">브랜드/시즌을 선택하고 조회 버튼을 눌러주세요</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={10} className="text-center py-16 text-gray-400">상품이 없습니다</td></tr>
+                <tr><td colSpan={4 + COLUMNS.length} className="text-center py-16 text-gray-400">
+                  조회 버튼을 눌러주세요
+                </td></tr>
+              ) : paged.length === 0 ? (
+                <tr><td colSpan={4 + COLUMNS.length} className="text-center py-16 text-gray-400">
+                  상품이 없습니다
+                </td></tr>
               ) : (
-                filtered.map((p, i) => {
+                paged.map((p, rowIdx) => {
                   const key = `${p.stylecd}_${p.colorcd}`
-                  const desc = getManual(p, 'product_description')
-                  const sp = (p.manual as Record<string, string[]>)?.selling_points || []
-                  const hasDesc = !!desc
+                  const hasDesc = !!(p.manual as Record<string, string>)?.product_description
 
                   return (
-                    <tr key={`${key}_${i}`}
-                      className={`border-b border-gray-200 hover:bg-gray-50 align-top ${expandedRow === key ? 'bg-violet-50' : ''}`}>
-                      <td className="px-3 py-2.5">
+                    <tr key={`${key}_${rowIdx}`} className="border-b border-gray-100 hover:bg-gray-50/30">
+                      <td className="px-1 py-0.5 sticky left-0 bg-white z-10 border-r border-gray-100">
                         <input type="checkbox" checked={selected.has(key)}
                           onChange={() => {
                             const next = new Set(selected)
@@ -363,32 +533,26 @@ export default function DesignPage() {
                             setSelected(next)
                           }} className="rounded border-gray-300" />
                       </td>
-                      <td className="px-3 py-2.5 font-mono text-xs text-gray-800">{p.stylecd}</td>
-                      <td className="px-3 py-2.5 text-xs text-gray-900">{p.stylenm}</td>
-                      <td className="px-3 py-2.5 text-xs text-gray-600">{p.colornm || p.colorcd}</td>
-                      <td className="px-3 py-2.5">
-                        <span className={`text-xs ${hasDesc ? 'text-emerald-600' : 'text-gray-400'}`}>
-                          {hasDesc ? '입력완료' : '미입력'}
-                        </span>
+                      <td className="px-2 py-0.5 font-mono text-[10px] text-gray-600 sticky left-8 bg-white z-10 border-r border-gray-100">
+                        <div className="flex items-center gap-1">
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${hasDesc ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                          {p.stylecd}<span className="text-gray-400">{p.colorcd}</span>
+                        </div>
                       </td>
-                      <td className="px-3 py-2.5 text-xs text-gray-700 cursor-pointer" onClick={() => setExpandedRow(key)}>
-                        {getManual(p, 'product_name_kr') || <span className="text-gray-300">—</span>}
+                      <td className="px-2 py-0.5 text-xs text-gray-900 truncate" style={{ maxWidth: 150 }} title={p.stylenm}>
+                        {p.stylenm}
                       </td>
-                      <td className="px-3 py-2.5 text-xs text-gray-700 cursor-pointer" onClick={() => setExpandedRow(key)}>
-                        {getManual(p, 'product_name_en') || <span className="text-gray-300">—</span>}
-                      </td>
-                      <td className="px-3 py-2.5 text-xs text-gray-700 cursor-pointer" onClick={() => setExpandedRow(key)}>
-                        {getManual(p, 'fit_type') || <span className="text-gray-300">—</span>}
-                      </td>
-                      <td className="px-3 py-2.5 text-xs text-gray-700 max-w-[250px] truncate cursor-pointer" onClick={() => setExpandedRow(key)}>
-                        {desc || <span className="text-gray-300">—</span>}
-                      </td>
-                      <td className="px-3 py-2.5 text-xs text-gray-700 cursor-pointer" onClick={() => setExpandedRow(key)}>
-                        {sp.length > 0 ? `${sp.length}개` : <span className="text-gray-300">—</span>}
-                      </td>
-                      <td className="px-3 py-2.5 text-xs text-gray-700 cursor-pointer" onClick={() => setExpandedRow(key)}>
-                        {getManual(p, 'designer_name') || <span className="text-gray-300">—</span>}
-                      </td>
+                      <td className="px-2 py-0.5 text-xs text-gray-500 truncate">{p.colornm || p.colorcd}</td>
+                      {COLUMNS.map((col, colIdx) => (
+                        <td key={col.key}
+                          className={`px-0.5 py-0.5 ${col.type === 'ai' ? 'bg-violet-50/30' : ''}`}
+                          style={{ width: col.w, minWidth: col.w }}>
+                          {col.editable
+                            ? renderEditableCell(rowIdx, colIdx)
+                            : renderAiCell(rowIdx, col.key)
+                          }
+                        </td>
+                      ))}
                     </tr>
                   )
                 })
@@ -397,110 +561,51 @@ export default function DesignPage() {
           </table>
         </div>
 
-        {/* 행 클릭 시 편집 패널 */}
-        {expandedRow && (() => {
-          const idx = filtered.findIndex(p => `${p.stylecd}_${p.colorcd}` === expandedRow)
-          const p = filtered[idx]
-          if (!p) return null
-          const desc = getManual(p, 'product_description')
-          const sp = (p.manual as Record<string, string[]>)?.selling_points || []
-          return (
-            <form key={expandedRow} className="border-t-2 border-violet-300 bg-violet-50/40 p-5"
-              onSubmit={async (e) => {
-                e.preventDefault()
-                const fd = new FormData(e.currentTarget)
-                const spText = fd.get('selling_points') as string
-                const sellingPoints = spText ? spText.split('\n').map(s => s.trim()).filter(Boolean) : []
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'product_name_kr', fd.get('product_name_kr') as string)
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'product_name_en', fd.get('product_name_en') as string)
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'fit_type', fd.get('fit_type') as string)
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'designer_name', fd.get('designer_name') as string)
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'product_description', fd.get('product_description') as string)
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'selling_points', sellingPoints)
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'product_description_online', fd.get('product_description_online') as string)
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'size_spec', fd.get('size_spec') as string)
-                await saveField(p.stylecd, p.colorcd, p.brandcd, 'detail_shot_code', fd.get('detail_shot_code') as string)
-                alert('저장 완료')
-                fetchData()
-              }}>
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <span className="text-sm font-bold text-gray-900">{p.stylenm}</span>
-                  <span className="text-xs text-gray-400 ml-2">{p.stylecd}{p.colorcd} · {p.colornm} · {p.itemnm}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button type="submit"
-                    className="px-4 py-1.5 text-xs bg-violet-600 text-white rounded-lg hover:bg-violet-700 font-medium">
-                    저장
-                  </button>
-                  <button type="button" onClick={() => setExpandedRow(null)} className="text-gray-400 hover:text-gray-600">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
+        {/* 하단 */}
+        <div className="flex items-center justify-between px-3 py-2 border-t border-gray-200 bg-gray-50 shrink-0">
+          <div className="flex items-center gap-3">
+            {selected.size > 0 && <span className="text-[10px] text-violet-600 font-medium">{selected.size}개 선택</span>}
+            <span className="text-[10px] text-gray-400">← → 스크롤로 AI 생성 결과 확인</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-gray-500">
+              {page * PAGE_SIZE + 1}-{Math.min((page + 1) * PAGE_SIZE, filtered.length)} / {filtered.length}건
+            </span>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+                  className="p-0.5 rounded hover:bg-gray-200 disabled:opacity-30">
+                  <ChevronLeft className="w-3.5 h-3.5 text-gray-600" />
+                </button>
+                <span className="text-[10px] text-gray-500 min-w-[40px] text-center">{page + 1}/{totalPages}</span>
+                <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+                  className="p-0.5 rounded hover:bg-gray-200 disabled:opacity-30">
+                  <ChevronRight className="w-3.5 h-3.5 text-gray-600" />
+                </button>
               </div>
-              <div className="grid grid-cols-4 gap-4">
-                <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block font-semibold">제품명 (한글)</label>
-                  <input name="product_name_kr" type="text" defaultValue={getManual(p, 'product_name_kr')} placeholder="온라인용 제품명"
-                    className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white" />
-                </div>
-                <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block font-semibold">제품명 (영어)</label>
-                  <input name="product_name_en" type="text" defaultValue={getManual(p, 'product_name_en')} placeholder="PRODUCT NAME"
-                    className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white" />
-                </div>
-                <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block font-semibold">핏</label>
-                  <select name="fit_type" defaultValue={getManual(p, 'fit_type')}
-                    className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white">
-                    <option value="">선택</option>
-                    {FIT_OPTIONS.map(f => <option key={f} value={f}>{f}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block font-semibold">담당 디자이너</label>
-                  <input name="designer_name" type="text" defaultValue={getManual(p, 'designer_name')} placeholder="이름"
-                    className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4 mt-3">
-                <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block font-semibold">디테일 설명 (디자인팀)</label>
-                  <textarea name="product_description" rows={5} defaultValue={desc}
-                    placeholder="- 레귤러 핏&#10;- 가슴 심볼 로고 프린트&#10;- YKK 나일론 2WAY 지퍼"
-                    className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white resize-none leading-relaxed" />
-                </div>
-                <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block font-semibold">셀링포인트 (줄바꿈 구분)</label>
-                  <textarea name="selling_points" rows={5} defaultValue={sp.join('\n')}
-                    placeholder="셀링포인트 1&#10;셀링포인트 2&#10;셀링포인트 3"
-                    className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white resize-none leading-relaxed" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4 mt-3">
-                <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block font-semibold">디테일 설명2 (온라인팀 문장형)</label>
-                  <textarea name="product_description_online" rows={3} defaultValue={getManual(p, 'product_description_online')}
-                    placeholder="레귤러 핏으로 착용되며..."
-                    className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white resize-none leading-relaxed" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-[10px] text-gray-500 mb-1 block font-semibold">사이즈 스펙</label>
-                    <input name="size_spec" type="text" defaultValue={getManual(p, 'size_spec')} placeholder="사이즈 정보"
-                      className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white" />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-gray-500 mb-1 block font-semibold">디테일컷 코드</label>
-                    <input name="detail_shot_code" type="text" defaultValue={getManual(p, 'detail_shot_code')} placeholder="BW-T02"
-                      className="w-full text-xs border border-gray-300 rounded-lg px-3 py-2 bg-white" />
-                  </div>
-                </div>
-              </div>
-            </form>
-          )
-        })()}
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* AI 일괄 모달 */}
+      {showAiModal && (
+        <AiDescriptionModal
+          products={filtered
+            .filter(p => selected.has(`${p.stylecd}_${p.colorcd}`))
+            .map(p => ({
+              stylecd: p.stylecd, colorcd: p.colorcd, brandcd: p.brandcd,
+              stylenm: p.stylenm, itemnm: p.itemnm, colornm: p.colornm,
+              tagprice: p.tagprice,
+              material_mix: (p.manual as Record<string, string>)?.material_mix || '',
+              product_description: (p.manual as Record<string, string>)?.product_description || '',
+              selling_points: (p.manual as Record<string, string[]>)?.selling_points || [],
+              fit_type: (p.manual as Record<string, string>)?.fit_type || '',
+            }))}
+          onClose={() => setShowAiModal(false)}
+          onSave={handleAiSave}
+        />
+      )}
     </div>
   )
 }

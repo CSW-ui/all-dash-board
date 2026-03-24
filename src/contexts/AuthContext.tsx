@@ -8,8 +8,9 @@ interface Profile {
   id: string
   email: string
   name: string
-  role: 'admin' | 'manager' | 'staff'
+  role: 'admin' | 'manager' | 'staff' | 'vendor'
   brands: string[]  // [] = 전체 브랜드 접근 (admin)
+  vendor_name?: string  // 협력사 사용자의 업체명
 }
 
 interface AuthContextValue {
@@ -40,16 +41,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function loadProfile(userId: string) {
     const { data } = await supabase
       .from('profiles')
-      .select('id, email, name, role, brands')
+      .select('id, email, name, role, brands, vendor_name')
       .eq('id', userId)
       .single()
     if (data) setProfile(data as Profile)
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       setUser(session?.user ?? null)
-      if (session?.user) loadProfile(session.user.id)
+      if (session?.user) await loadProfile(session.user.id)
       setLoading(false)
     })
 
@@ -71,8 +72,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const allowedBrands = (isAdmin || !profile?.brands?.length) ? null : profile.brands
 
   async function signOut() {
+    const isVendor = profile?.role === 'vendor'
     await supabase.auth.signOut()
-    window.location.href = '/login'
+    window.location.href = isVendor ? '/vendor/login' : '/login'
   }
 
   return (

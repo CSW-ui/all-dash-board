@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createSupabaseBrowserClient } from '@/lib/supabase-browser'
 
 export default function LoginPage() {
@@ -10,14 +10,35 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const supabase = createSupabaseBrowserClient()
 
+  // 이미 로그인된 세션이 있으면 역할에 따라 리다이렉트
+  useEffect(() => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session?.user) {
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', session.user.id)
+          .single()
+        window.location.href = prof?.role === 'vendor' ? '/vendor' : '/dashboard'
+      }
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
     setLoading(true)
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) throw error
-      window.location.href = '/dashboard'
+      // 프로필 조회하여 vendor면 /vendor로 리다이렉트
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', authData.user.id)
+        .single()
+      window.location.href = prof?.role === 'vendor' ? '/vendor' : '/dashboard'
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       setError(msg === 'Invalid login credentials' ? '이메일 또는 비밀번호가 올바르지 않습니다' : msg)

@@ -43,7 +43,7 @@ export interface PerfRow {
 }
 export interface PerfData {
   cy: PerfRow[]; ly: PerfRow[]
-  meta: { cwStart: string; cwEnd: string; pwStart: string; pwEnd: string; monthStart: string; monthLabel: string }
+  meta: { cwStart: string; cwEnd: string; pwStart: string; pwEnd: string; monthStart: string; monthEnd: string; monthLabel: string; cwLabel: string }
 }
 
 export type Agg = Omit<PerfRow, 'brandcd' | 'brandnm' | 'shoptypenm'>
@@ -64,6 +64,7 @@ export interface PerfMetrics {
   forecast: number | null; forecastAch: number | null
   mtdDc: number; mtdCogs: number
   cwRev: number; wow: number; wowPct: number | null; cwDc: number; cwCogs: number
+  cwYoy: number; cwYoyPct: number | null  // 주간 YoY
   yoy: number; yoyPct: number | null; dcChg: number; cogsChg: number
   lyMtdRev: number
 }
@@ -103,6 +104,8 @@ export function calcMetrics(cy: Agg, ly: Agg, target: number | null, mp?: MonthP
     wow: cy.cwRev - cy.pwRev,
     wowPct: cy.pwRev !== 0 ? ((cy.cwRev - cy.pwRev) / Math.abs(cy.pwRev)) * 100 : null,
     cwDc, cwCogs,
+    cwYoy: cy.cwRev - ly.cwRev,
+    cwYoyPct: ly.cwRev !== 0 ? ((cy.cwRev - ly.cwRev) / Math.abs(ly.cwRev)) * 100 : null,
     yoy: cy.mtdRev - ly.mtdRev,
     yoyPct: ly.mtdRev !== 0 ? ((cy.mtdRev - ly.mtdRev) / Math.abs(ly.mtdRev)) * 100 : null,
     dcChg: mtdDc - lyMtdDc,
@@ -120,4 +123,10 @@ export function channelParams(sf: SelFilter) {
   if (sf.type === 'group')   return `&channelGroup=${encodeURIComponent(sf.group)}`
   if (sf.type === 'channel') return `&channelGroup=${encodeURIComponent(sf.group)}&channel=${encodeURIComponent(sf.channel)}`
   return ''
+}
+
+/** 다중 채널 선택 → API 파라미터 */
+export function channelParamsFromSet(channels: Set<string>) {
+  if (channels.size === 0) return ''
+  return `&channels=${Array.from(channels).map(c => encodeURIComponent(c)).join(',')}`
 }

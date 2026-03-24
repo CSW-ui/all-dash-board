@@ -37,7 +37,9 @@ export async function GET(req: Request) {
 
   // 상품 필터 (매장 선택 시)
   const shopFilter = selShopCd ? `AND v.SHOPCD = '${selShopCd.replace(/'/g, "''")}'` : ''
-  const itemFilter = selItem ? `AND si.ITEMNM = '${selItem.replace(/'/g, "''")}'` : ''
+  // STYLEINFO 별칭이 쿼리마다 다름: shopData/topProducts → sti, itemData → si
+  const itemFilterSti = selItem ? `AND sti.ITEMNM = '${selItem.replace(/'/g, "''")}'` : ''
+  const itemFilterSi = selItem ? `AND si.ITEMNM = '${selItem.replace(/'/g, "''")}'` : ''
 
   try {
     const [shopData, lyShopData, topProducts, itemData] = await Promise.all([
@@ -55,17 +57,18 @@ export async function GET(req: Request) {
         LEFT JOIN BCAVE.SEWON.SW_SHOPINFO si ON v.SHOPCD = si.SHOPCD
         LEFT JOIN BCAVE.SEWON.SW_STYLEINFO sti ON v.STYLECD = sti.STYLECD AND v.BRANDCD = sti.BRANDCD
         WHERE ${brandWhere} AND v.SHOPTYPENM = '${channelSafe}'
-          AND v.SALEDT BETWEEN '${pwStart}' AND '${cwEnd}'
-          ${itemFilter}
+          AND v.SALEDT BETWEEN '${monthStart < pwStart ? monthStart : pwStart}' AND '${cwEnd}'
+          ${itemFilterSti}
         GROUP BY v.SHOPCD ORDER BY MTD_REV DESC
       `),
       // 전년 동기
       snowflakeQuery<Record<string, string>>(`
         SELECT v.SHOPCD, SUM(v.SALEAMT_VAT_EX) as MTD_REV
         FROM ${SALES_VIEW} v
+        ${selItem ? `LEFT JOIN BCAVE.SEWON.SW_STYLEINFO si ON v.STYLECD = si.STYLECD AND v.BRANDCD = si.BRANDCD` : ''}
         WHERE ${brandWhere} AND v.SHOPTYPENM = '${channelSafe}'
           AND v.SALEDT BETWEEN '${lyMonthStart}' AND '${lyCwEnd}'
-          ${itemFilter}
+          ${itemFilterSi}
         GROUP BY v.SHOPCD
       `),
       // 베스트 상품 (전주 기준, 매장 필터 적용)
@@ -82,7 +85,7 @@ export async function GET(req: Request) {
         WHERE ${brandWhere} AND v.SHOPTYPENM = '${channelSafe}'
           AND v.SALEDT BETWEEN '${pwStart}' AND '${cwEnd}'
           ${shopFilter}
-          ${itemFilter}
+          ${itemFilterSti}
         GROUP BY v.STYLECD, v.BRANDCD
         ORDER BY CW_REV DESC LIMIT 20
       `),

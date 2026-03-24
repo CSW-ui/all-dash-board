@@ -5,6 +5,7 @@ import { Plus, ChevronLeft, ChevronRight, Pencil, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CampaignDetailPanel } from './CampaignDetailPanel'
 import { CampaignFormModal } from './modals/CampaignFormModal'
+import type { InfluencerSeedingRecord } from '@/types/marketing'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -105,7 +106,7 @@ function toIMCCampaign(c: Campaign) {
       productCode: p.product_code,
       productName: p.product_name,
     })),
-    seedingRecords: [] as unknown[],
+    seedingRecords: [] as InfluencerSeedingRecord[],
     metaAds: undefined,
   }
 }

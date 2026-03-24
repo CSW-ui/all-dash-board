@@ -6,7 +6,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from 'recharts'
-import { ArrowLeft, RefreshCw, Package, X, Bot, AlertTriangle, Lightbulb } from 'lucide-react'
+import { ArrowLeft, RefreshCw, Package, X, Bot, AlertTriangle, Lightbulb, ShoppingBag, Megaphone, Truck, Target, TrendingDown, ArrowUpRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { BRAND_COLORS, BRAND_TABS } from '@/lib/constants'
 import { fmtW, fmtDelta, fmtDeltaPt } from '@/lib/formatters'
@@ -129,7 +129,7 @@ export default function ItemDetailPage() {
       { t:'발주금액', v:fmtW(cy.ot), d:fmtDelta(cy.ot,ly.ot) },
       { t:'입고율', v:`${ir}%`, d:fmtDeltaPt(ir,lir) },
       { t:'매출', v:fmtW(cyWeekTotal || cy.sa), d:fmtDelta(cyWeekTotal || cy.sa, lyWeekMatch || ly.sa) },
-      { t:'소진율', v:`${st}%`, d:fmtDeltaPt(st,lst) },
+      { t:'판매율', v:`${st}%`, d:fmtDeltaPt(st,lst) },
       { t:'DC%', v:`${dc}%`, d:fmtDeltaPt(dc,ldc) },
     ]
   }, [styles, lyStyles, weeks, maxCyWeek, weekMeta])
@@ -298,22 +298,103 @@ export default function ItemDetailPage() {
         </div>
       </div>
 
-      {/* AI 예측 분석 카드 */}
+      {/* AI 분석 — PMD 프레임워크 */}
       {forecast && (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-            <div className="flex items-center gap-1.5 mb-2"><Bot size={14} className="text-blue-500" /><span className="text-xs font-semibold text-blue-800">AI 예측 요약</span></div>
-            <p className="text-[11px] text-blue-800 leading-relaxed">{forecast.summary}</p>
-            {forecast.weather && <p className="text-[10px] text-blue-500 mt-2">{forecast.weather}</p>}
+        <div className="space-y-3">
+          {/* ① 한줄 상태 요약 + ② 호/부진 원인 Top3 */}
+          <div className="grid grid-cols-4 gap-3">
+            <div className={cn('rounded-xl border p-4',
+              forecast.status === '기회' ? 'bg-emerald-50 border-emerald-200' :
+              forecast.status === '위험' ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200')}>
+              <div className="flex items-center gap-1.5 mb-1">
+                <Target size={14} className={forecast.status === '기회' ? 'text-emerald-500' : forecast.status === '위험' ? 'text-red-500' : 'text-blue-500'} />
+                <span className={cn('text-xs font-bold px-2 py-0.5 rounded-full',
+                  forecast.status === '기회' ? 'bg-emerald-100 text-emerald-700' :
+                  forecast.status === '위험' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700')}>
+                  {forecast.status}
+                </span>
+              </div>
+              <p className="text-[11px] text-gray-800 leading-relaxed mt-2">{forecast.statusSummary || forecast.summary}</p>
+              {forecast.weather && <p className="text-[10px] text-gray-400 mt-2">{forecast.weather}</p>}
+            </div>
+
+            <div className="col-span-3 bg-white rounded-xl border border-surface-border shadow-sm p-4">
+              <h4 className="text-xs font-semibold text-gray-700 mb-2">호/부진 원인 Top 3</h4>
+              {(forecast.topFactors ?? []).length > 0 ? (
+                <div className="space-y-2">
+                  {(forecast.topFactors ?? []).map((f: any, i: number) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <span className={cn('mt-0.5 shrink-0 w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold text-white',
+                        f.impact === 'positive' ? 'bg-emerald-500' : 'bg-red-500')}>
+                        {f.impact === 'positive' ? '↑' : '↓'}
+                      </span>
+                      <div>
+                        <span className="text-[11px] font-semibold text-gray-800">{f.factor}</span>
+                        <p className="text-[10px] text-gray-500">{f.detail}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <ul className="space-y-1">
+                  {(forecast.risks ?? []).map((r: string, i: number) => <li key={i} className="text-[11px] text-gray-700">· {r}</li>)}
+                  {(forecast.suggestions ?? []).map((s: string, i: number) => <li key={i} className="text-[11px] text-gray-700">· {s}</li>)}
+                </ul>
+              )}
+            </div>
           </div>
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-            <div className="flex items-center gap-1.5 mb-2"><AlertTriangle size={14} className="text-amber-500" /><span className="text-xs font-semibold text-amber-800">위험 요소</span></div>
-            <ul className="space-y-1">{(forecast.risks ?? []).map((r: string, i: number) => <li key={i} className="text-[11px] text-amber-800">· {r}</li>)}</ul>
+
+          {/* ③ PMD 실행 제안 */}
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { key: 'product', icon: ShoppingBag, title: 'P · Product', color: 'blue', desc: '리오더/단종/SKU조정' },
+              { key: 'marketing', icon: Megaphone, title: 'M · Marketing', color: 'pink', desc: '콘텐츠/타겟/셀럽' },
+              { key: 'distribution', icon: Truck, title: 'D · Distribution', color: 'purple', desc: '채널/할인/재배치' },
+            ].map(({ key, icon: Icon, title, color, desc }) => {
+              const items: string[] = forecast.pmd?.[key] ?? forecast.suggestions ?? []
+              const bgMap: Record<string, string> = { blue: 'bg-blue-50 border-blue-200', pink: 'bg-pink-50 border-pink-200', purple: 'bg-purple-50 border-purple-200' }
+              const textMap: Record<string, string> = { blue: 'text-blue-700', pink: 'text-pink-700', purple: 'text-purple-700' }
+              const iconMap: Record<string, string> = { blue: 'text-blue-500', pink: 'text-pink-500', purple: 'text-purple-500' }
+              return (
+                <div key={key} className={cn('rounded-xl border p-4', bgMap[color])}>
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <Icon size={14} className={iconMap[color]} />
+                    <span className={cn('text-xs font-bold', textMap[color])}>{title}</span>
+                    <span className="text-[9px] text-gray-400 ml-1">{desc}</span>
+                  </div>
+                  <ul className="space-y-1">
+                    {items.length > 0
+                      ? items.map((s, i) => <li key={i} className={cn('text-[11px] leading-relaxed', textMap[color])}>· {s}</li>)
+                      : <li className="text-[10px] text-gray-400">분석 데이터 부족</li>
+                    }
+                  </ul>
+                </div>
+              )
+            })}
           </div>
-          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-            <div className="flex items-center gap-1.5 mb-2"><Lightbulb size={14} className="text-emerald-500" /><span className="text-xs font-semibold text-emerald-800">기획 제안</span></div>
-            <ul className="space-y-1">{(forecast.suggestions ?? []).map((s: string, i: number) => <li key={i} className="text-[11px] text-emerald-800">· {s}</li>)}</ul>
-          </div>
+
+          {/* ④ 시즌 종료 예측 */}
+          {forecast.seasonEndForecast && (
+            <div className="bg-gray-50 rounded-xl border border-gray-200 p-4">
+              <h4 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
+                <TrendingDown size={14} className="text-gray-500" /> 시즌 종료 예측
+              </h4>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <p className="text-[10px] text-gray-400">예상 판매율</p>
+                  <p className="text-sm font-bold text-gray-900">{forecast.seasonEndForecast.expectedSalesRate}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-gray-400">잔여 재고금액</p>
+                  <p className="text-sm font-bold text-gray-900">{forecast.seasonEndForecast.remainingInventory}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-gray-400">손익 전망</p>
+                  <p className="text-sm font-bold text-gray-900">{forecast.seasonEndForecast.profitOutlook}</p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -336,7 +417,7 @@ export default function ItemDetailPage() {
                       <th className="text-right px-1 py-1.5">누적매출</th>
                       <th className="text-right px-1 py-1.5">전주매출</th>
                       <th className="text-right px-1 py-1.5">WoW</th>
-                      <th className="text-right px-2 py-1.5">소진율</th>
+                      <th className="text-right px-2 py-1.5">판매율</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -411,7 +492,7 @@ export default function ItemDetailPage() {
                   <th className="text-right px-1 py-2 border-l border-gray-200">판매수량</th>
                   <th className="text-right px-1 py-2">매출</th>
                   <th className="text-right px-1 py-2">DC%</th>
-                  <th className="text-right px-1 py-2">소진율</th>
+                  <th className="text-right px-1 py-2">판매율</th>
                   <th className="text-right px-1 py-2 border-l border-gray-200">매출</th>
                   <th className="text-right px-1 py-2">수량</th>
                   <th className="text-right px-1 py-2">WoW</th>

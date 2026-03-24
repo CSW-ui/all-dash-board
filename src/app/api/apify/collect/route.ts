@@ -115,7 +115,7 @@ export async function POST(req: Request) {
   const cleanHandles = handles.map(h => h.replace(/^@/, '').trim()).filter(Boolean)
 
   try {
-    let rows: ReturnType<typeof parseInstagram>
+    let rows: ReturnType<typeof parseInstagram> | ReturnType<typeof parseTikTok>
 
     if (platform === 'instagram') {
       const items = await runActor(actorId, { usernames: cleanHandles })

@@ -3,7 +3,20 @@ import { snowflakeQuery, BRAND_FILTER, SALES_VIEW } from '@/lib/snowflake'
 import { VALID_BRANDS } from '@/lib/constants'
 import { fmtDateSf } from '@/lib/formatters'
 
-function getDateRanges(monthParam?: string) {
+// 주차 번호 → 해당 연도의 월~일 날짜 반환
+function weekToDate(yr: number, wn: number): { mon: Date; sun: Date } {
+  const jan4 = new Date(yr, 0, 4)
+  const jan4Dow = jan4.getDay() || 7
+  const week1Mon = new Date(jan4)
+  week1Mon.setDate(jan4.getDate() - jan4Dow + 1)
+  const mon = new Date(week1Mon)
+  mon.setDate(week1Mon.getDate() + (wn - 1) * 7)
+  const sun = new Date(mon)
+  sun.setDate(mon.getDate() + 6)
+  return { mon, sun }
+}
+
+function getDateRanges(monthParam?: string, weekNum?: number, weekFrom?: number, weekTo?: number) {
   let today: Date
   let isPastMonth = false
   let forcedMonthStart: Date | null = null
@@ -12,14 +25,13 @@ function getDateRanges(monthParam?: string) {
   if (monthParam && monthParam.length === 6) {
     const yr = parseInt(monthParam.slice(0, 4))
     const mo = parseInt(monthParam.slice(4, 6))
-    const lastDay = new Date(yr, mo, 0) // 해당 월의 마지막 날
+    const lastDay = new Date(yr, mo, 0)
     const now = new Date()
 
     forcedMonthStart = new Date(yr, mo - 1, 1)
     forcedMonthEnd = lastDay
 
     if (now > lastDay) {
-      // 과거 월: 마지막 날 기준
       today = lastDay
       isPastMonth = true
     } else {
@@ -29,26 +41,46 @@ function getDateRanges(monthParam?: string) {
     today = new Date()
   }
 
-  const dow = today.getDay() // 0=Sun
+  let cwEnd: Date
+  let cwStart: Date
 
-  // Most recently completed week's Sunday
-  const lastSun = new Date(today)
-  lastSun.setDate(today.getDate() - (dow === 0 ? 7 : dow))
+  if (weekFrom && weekTo && weekFrom > 0 && weekTo > 0) {
+    // 구간 선택: weekFrom ~ weekTo
+    const yr = today.getFullYear()
+    const from = weekToDate(yr, Math.min(weekFrom, weekTo))
+    const to = weekToDate(yr, Math.max(weekFrom, weekTo))
+    cwStart = from.mon
+    cwEnd = to.sun
+  } else if (weekNum && weekNum > 0) {
+    // 단일 주 선택
+    const yr = today.getFullYear()
+    const { mon, sun } = weekToDate(yr, weekNum)
+    cwStart = mon
+    cwEnd = sun
+  } else {
+    const dow = today.getDay()
+    const lastSun = new Date(today)
+    lastSun.setDate(today.getDate() - (dow === 0 ? 7 : dow))
+    cwEnd = new Date(lastSun)
+    cwStart = new Date(lastSun)
+    cwStart.setDate(cwStart.getDate() - 6)
+  }
 
-  // Current week (last completed Mon–Sun)
-  const cwEnd = new Date(lastSun)
-  const cwStart = new Date(lastSun)
-  cwStart.setDate(cwStart.getDate() - 6)
-
-  // Previous week
+  // PW: CW와 동일 길이의 직전 구간
+  const cwDays = Math.round((cwEnd.getTime() - cwStart.getTime()) / 86400000)
   const pwEnd = new Date(cwStart)
   pwEnd.setDate(pwEnd.getDate() - 1)
   const pwStart = new Date(pwEnd)
-  pwStart.setDate(pwStart.getDate() - 6)
+  pwStart.setDate(pwEnd.getDate() - cwDays)
 
-  // 월 시작/끝: 과거 월이면 전체 월, 아니면 cwEnd 기준
-  const monthStart = forcedMonthStart ?? new Date(cwEnd.getFullYear(), cwEnd.getMonth(), 1)
-  const monthEnd = forcedMonthEnd ?? cwEnd // 과거 월이면 월말까지, 현재 월이면 cwEnd까지
+  // 월 시작/끝: 주간 선택과 무관, 전일마감 기준
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const monthStart = forcedMonthStart ?? new Date(yesterday.getFullYear(), yesterday.getMonth(), 1)
+  const monthEnd = forcedMonthEnd ?? yesterday
+
+  // 주간 실적 레이블
+  const cwLabel = `${cwStart.getMonth()+1}/${cwStart.getDate()}~${cwEnd.getMonth()+1}/${cwEnd.getDate()}`
 
   return {
     cwStart: fmtDateSf(cwStart),
@@ -58,6 +90,7 @@ function getDateRanges(monthParam?: string) {
     monthStart: fmtDateSf(monthStart),
     monthEnd: fmtDateSf(monthEnd),
     monthLabel: `${monthStart.getFullYear()}년 ${monthStart.getMonth() + 1}월`,
+    cwLabel,
     isPastMonth,
   }
 }
@@ -73,12 +106,22 @@ export async function GET(req: Request) {
 
   const stylecd = searchParams.get('stylecd') || ''
   const month = searchParams.get('month') || ''
+  const itemNm = searchParams.get('item') || ''
+  const weekNumParam = searchParams.get('weekNum') || ''
+  const weekFromParam = searchParams.get('weekFrom') || ''
+  const weekToParam = searchParams.get('weekTo') || ''
 
-  const dates = getDateRanges(month || undefined)
+  const dates = getDateRanges(
+    month || undefined,
+    weekNumParam ? parseInt(weekNumParam) : undefined,
+    weekFromParam ? parseInt(weekFromParam) : undefined,
+    weekToParam ? parseInt(weekToParam) : undefined,
+  )
   const brandWhere = brand === 'all'
     ? BRAND_FILTER.replace(/BRANDCD/g, 's.BRANDCD')
     : `s.BRANDCD = '${brand}'`
   const styleFilter = stylecd ? `AND s.STYLECD = '${stylecd.replace(/'/g, "''")}'` : ''
+  const itemFilter = itemNm ? `AND si.ITEMNM = '${itemNm.replace(/'/g, "''")}'` : ''
 
   const rangeEnd = dates.monthEnd > dates.cwEnd ? dates.monthEnd : dates.cwEnd
   const rangeStart = dates.monthStart < dates.pwStart ? dates.monthStart : dates.pwStart
@@ -114,6 +157,7 @@ export async function GET(req: Request) {
       WHERE ${brandWhere}
         AND s.SALEDT BETWEEN '${rs}' AND '${re}'
         ${styleFilter}
+        ${itemFilter}
       GROUP BY s.BRANDCD, s.BRANDNM, s.SHOPTYPENM
     `
   }

@@ -27,7 +27,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const performerMap = new Map<string, { handle: string; platform: string; views: number; reach: number; likes: number }>()
 
   for (const r of records) {
-    const inf = r.influencers as { handle: string; platform: string } | null
+    const rawInf = r.influencers as { handle: string; platform: string } | { handle: string; platform: string }[] | null
+    const inf = Array.isArray(rawInf) ? rawInf[0] ?? null : rawInf
     const results = Array.isArray(r.seeding_results) ? r.seeding_results : r.seeding_results ? [r.seeding_results] : []
     for (const res of results as { views: number; likes: number; estimated_reach: number; is_posted: boolean }[]) {
       if (res.is_posted) {

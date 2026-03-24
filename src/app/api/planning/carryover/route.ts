@@ -31,6 +31,10 @@ export async function GET(req: Request) {
   const cwStart = fD(new Date(lastSun.getTime() - 6 * 86400000))
   const pwEnd = fD(new Date(lastSun.getTime() - 7 * 86400000))
   const pwStart = fD(new Date(lastSun.getTime() - 13 * 86400000))
+  const pw2End = fD(new Date(lastSun.getTime() - 14 * 86400000))
+  const pw2Start = fD(new Date(lastSun.getTime() - 20 * 86400000))
+  const pw3End = fD(new Date(lastSun.getTime() - 21 * 86400000))
+  const pw3Start = fD(new Date(lastSun.getTime() - 27 * 86400000))
 
   try {
     const [itemData, channelData, topStyles, yearData] = await Promise.all([
@@ -42,20 +46,32 @@ export async function GET(req: Request) {
           COALESCE(SUM(inv.INVQTY), 0) as SHOP_INV,
           COALESCE(SUM(wh.AVAILQTY), 0) as WH_AVAIL,
           COALESCE(SUM(s_cw.CW_AMT), 0) as CW_REV,
+          COALESCE(SUM(s_cw.CW_QTY), 0) as CW_QTY,
           COALESCE(SUM(s_pw.PW_AMT), 0) as PW_REV,
+          COALESCE(SUM(s_pw.PW_QTY), 0) as PW_QTY,
+          COALESCE(SUM(s_pw2.PW2_QTY), 0) as PW2_QTY,
+          COALESCE(SUM(s_pw3.PW3_QTY), 0) as PW3_QTY,
           COALESCE(SUM(s_all.TOTAL_AMT), 0) as TOTAL_REV,
           COALESCE(SUM(s_all.TOTAL_QTY), 0) as TOTAL_QTY
         FROM BCAVE.SEWON.SW_STYLEINFO si
         LEFT JOIN (SELECT STYLECD, SUM(INVQTY) as INVQTY FROM BCAVE.SEWON.SW_SHOPINV GROUP BY STYLECD) inv ON si.STYLECD = inv.STYLECD
         LEFT JOIN (SELECT STYLECD, SUM(AVAILQTY) as AVAILQTY FROM BCAVE.SEWON.SW_WHINV GROUP BY STYLECD) wh ON si.STYLECD = wh.STYLECD
         LEFT JOIN (
-          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEAMT_VAT_EX) as CW_AMT
+          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEAMT_VAT_EX) as CW_AMT, SUM(v.SALEQTY) as CW_QTY
           FROM ${SALES_VIEW} v WHERE v.SALEDT BETWEEN '${cwStart}' AND '${cwEnd}' GROUP BY v.STYLECD, v.BRANDCD
         ) s_cw ON si.STYLECD = s_cw.STYLECD AND si.BRANDCD = s_cw.BRANDCD
         LEFT JOIN (
-          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEAMT_VAT_EX) as PW_AMT
+          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEAMT_VAT_EX) as PW_AMT, SUM(v.SALEQTY) as PW_QTY
           FROM ${SALES_VIEW} v WHERE v.SALEDT BETWEEN '${pwStart}' AND '${pwEnd}' GROUP BY v.STYLECD, v.BRANDCD
         ) s_pw ON si.STYLECD = s_pw.STYLECD AND si.BRANDCD = s_pw.BRANDCD
+        LEFT JOIN (
+          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEQTY) as PW2_QTY
+          FROM ${SALES_VIEW} v WHERE v.SALEDT BETWEEN '${pw2Start}' AND '${pw2End}' GROUP BY v.STYLECD, v.BRANDCD
+        ) s_pw2 ON si.STYLECD = s_pw2.STYLECD AND si.BRANDCD = s_pw2.BRANDCD
+        LEFT JOIN (
+          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEQTY) as PW3_QTY
+          FROM ${SALES_VIEW} v WHERE v.SALEDT BETWEEN '${pw3Start}' AND '${pw3End}' GROUP BY v.STYLECD, v.BRANDCD
+        ) s_pw3 ON si.STYLECD = s_pw3.STYLECD AND si.BRANDCD = s_pw3.BRANDCD
         LEFT JOIN (
           SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEAMT_VAT_EX) as TOTAL_AMT, SUM(v.SALEQTY) as TOTAL_QTY
           FROM ${SALES_VIEW} v WHERE v.SALEDT >= '20${curYr}0101' GROUP BY v.STYLECD, v.BRANDCD
@@ -81,14 +97,18 @@ export async function GET(req: Request) {
         ORDER BY TOTAL_REV DESC
       `),
 
-      // 이월 적체 상품 TOP 20 (재고 많고 소진율 낮은)
+      // 이월 적체 상품 TOP 30 (재고금액 높은 순)
       snowflakeQuery<Record<string, string>>(`
         SELECT si.STYLECD, si.STYLENM, si.BRANDCD, si.ITEMNM, si.YEARCD, si.TAGPRICE,
           COALESCE(inv.INVQTY, 0) as SHOP_INV,
           COALESCE(wh.AVAILQTY, 0) as WH_AVAIL,
           COALESCE(s.SALE_QTY, 0) as SALE_QTY,
           COALESCE(s.SALE_AMT, 0) as SALE_AMT,
-          COALESCE(s_cw.CW_AMT, 0) as CW_REV
+          COALESCE(s_cw.CW_AMT, 0) as CW_REV,
+          COALESCE(s_cw.CW_QTY, 0) as CW_QTY,
+          COALESCE(s_pw.PW_QTY, 0) as PW_QTY,
+          COALESCE(s_pw2.PW2_QTY, 0) as PW2_QTY,
+          COALESCE(s_pw3.PW3_QTY, 0) as PW3_QTY
         FROM BCAVE.SEWON.SW_STYLEINFO si
         LEFT JOIN (SELECT STYLECD, SUM(INVQTY) as INVQTY FROM BCAVE.SEWON.SW_SHOPINV GROUP BY STYLECD) inv ON si.STYLECD = inv.STYLECD
         LEFT JOIN (SELECT STYLECD, SUM(AVAILQTY) as AVAILQTY FROM BCAVE.SEWON.SW_WHINV GROUP BY STYLECD) wh ON si.STYLECD = wh.STYLECD
@@ -97,12 +117,24 @@ export async function GET(req: Request) {
           FROM ${SALES_VIEW} v WHERE v.SALEDT >= '20${curYr}0101' GROUP BY v.STYLECD, v.BRANDCD
         ) s ON si.STYLECD = s.STYLECD AND si.BRANDCD = s.BRANDCD
         LEFT JOIN (
-          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEAMT_VAT_EX) as CW_AMT
+          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEAMT_VAT_EX) as CW_AMT, SUM(v.SALEQTY) as CW_QTY
           FROM ${SALES_VIEW} v WHERE v.SALEDT BETWEEN '${cwStart}' AND '${cwEnd}' GROUP BY v.STYLECD, v.BRANDCD
         ) s_cw ON si.STYLECD = s_cw.STYLECD AND si.BRANDCD = s_cw.BRANDCD
+        LEFT JOIN (
+          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEQTY) as PW_QTY
+          FROM ${SALES_VIEW} v WHERE v.SALEDT BETWEEN '${pwStart}' AND '${pwEnd}' GROUP BY v.STYLECD, v.BRANDCD
+        ) s_pw ON si.STYLECD = s_pw.STYLECD AND si.BRANDCD = s_pw.BRANDCD
+        LEFT JOIN (
+          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEQTY) as PW2_QTY
+          FROM ${SALES_VIEW} v WHERE v.SALEDT BETWEEN '${pw2Start}' AND '${pw2End}' GROUP BY v.STYLECD, v.BRANDCD
+        ) s_pw2 ON si.STYLECD = s_pw2.STYLECD AND si.BRANDCD = s_pw2.BRANDCD
+        LEFT JOIN (
+          SELECT v.STYLECD, v.BRANDCD, SUM(v.SALEQTY) as PW3_QTY
+          FROM ${SALES_VIEW} v WHERE v.SALEDT BETWEEN '${pw3Start}' AND '${pw3End}' GROUP BY v.STYLECD, v.BRANDCD
+        ) s_pw3 ON si.STYLECD = s_pw3.STYLECD AND si.BRANDCD = s_pw3.BRANDCD
         WHERE ${brandWhere} AND si.YEARCD < '${curYr}' ${selYear ? `AND si.YEARCD = '${selYear}'` : ''}
           AND (COALESCE(inv.INVQTY, 0) + COALESCE(wh.AVAILQTY, 0)) > 0
-        ORDER BY (COALESCE(inv.INVQTY, 0) + COALESCE(wh.AVAILQTY, 0)) DESC
+        ORDER BY (COALESCE(inv.INVQTY, 0) + COALESCE(wh.AVAILQTY, 0)) * si.TAGPRICE DESC
         LIMIT 30
       `),
 
@@ -137,6 +169,13 @@ export async function GET(req: Request) {
       const totalQty = Number(r.TOTAL_QTY) || 0
       const cwRev = Number(r.CW_REV) || 0
       const pwRev = Number(r.PW_REV) || 0
+      const cwQty = Number(r.CW_QTY) || 0
+      const pwQty = Number(r.PW_QTY) || 0
+      const pw2Qty = Number(r.PW2_QTY) || 0
+      const pw3Qty = Number(r.PW3_QTY) || 0
+      const avgWeeklyQty = ((cwQty + pwQty + pw2Qty + pw3Qty) / 4) || 0
+      const invWeeks = avgWeeklyQty > 0 ? Math.round(totalInv / avgWeeklyQty * 10) / 10 : 999
+      const whRatio = totalInv > 0 ? Math.round(whAvail / totalInv * 1000) / 10 : 0
       return {
         item: r.ITEMNM ?? '기타',
         styleCnt: Number(r.STYLE_CNT) || 0,
@@ -148,6 +187,7 @@ export async function GET(req: Request) {
         cwRev, pwRev,
         wow: pwRev > 0 ? Math.round((cwRev - pwRev) / pwRev * 1000) / 10 : 0,
         sellThrough: (totalQty + totalInv) > 0 ? Math.round(totalQty / (totalQty + totalInv) * 1000) / 10 : 0,
+        invWeeks, whRatio,
       }
     })
 
@@ -168,6 +208,13 @@ export async function GET(req: Request) {
       const whAvail = Number(r.WH_AVAIL) || 0
       const totalInv = shopInv + whAvail
       const saleQty = Number(r.SALE_QTY) || 0
+      const cwQty = Number(r.CW_QTY) || 0
+      const pwQty = Number(r.PW_QTY) || 0
+      const pw2Qty = Number(r.PW2_QTY) || 0
+      const pw3Qty = Number(r.PW3_QTY) || 0
+      const avgWeeklyQty = ((cwQty + pwQty + pw2Qty + pw3Qty) / 4) || 0
+      const invWeeks = avgWeeklyQty > 0 ? Math.round(totalInv / avgWeeklyQty * 10) / 10 : 999
+      const whRatio = totalInv > 0 ? Math.round(whAvail / totalInv * 1000) / 10 : 0
       return {
         stylecd: r.STYLECD, stylenm: r.STYLENM ?? r.STYLECD,
         brandcd: r.BRANDCD, item: r.ITEMNM, yearcd: r.YEARCD,
@@ -177,6 +224,7 @@ export async function GET(req: Request) {
         saleQty, saleAmt: Number(r.SALE_AMT) || 0,
         cwRev: Number(r.CW_REV) || 0,
         sellThrough: (saleQty + totalInv) > 0 ? Math.round(saleQty / (saleQty + totalInv) * 1000) / 10 : 0,
+        invWeeks, whRatio,
       }
     })
 
@@ -187,6 +235,9 @@ export async function GET(req: Request) {
     const avgSellThrough = items.length > 0
       ? Math.round(items.reduce((s, i) => s + i.sellThrough, 0) / items.length * 10) / 10 : 0
     const staleCount = staleStyles.filter(s => s.sellThrough < 10).length
+    const validInvWeeks = items.filter(i => i.invWeeks < 999)
+    const avgInvWeeks = validInvWeeks.length > 0
+      ? Math.round(validInvWeeks.reduce((s, i) => s + i.invWeeks, 0) / validInvWeeks.length * 10) / 10 : 0
 
     // 연도별
     const years = yearData.map(r => {
@@ -200,7 +251,7 @@ export async function GET(req: Request) {
     })
 
     return NextResponse.json({
-      kpi: { totalInv, totalInvAmt, totalCwRev, avgSellThrough, staleCount, itemCount: items.length },
+      kpi: { totalInv, totalInvAmt, totalCwRev, avgSellThrough, staleCount, itemCount: items.length, avgInvWeeks },
       items, channels, staleStyles, years,
     })
   } catch (err) {

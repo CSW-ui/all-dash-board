@@ -44,13 +44,16 @@ export default function CarryoverPage() {
   const [aiAdvice, setAiAdvice] = useState<string>('')
   const [aiLoading, setAiLoading] = useState(false)
   const [selYear, setSelYear] = useState<string | null>(null)
+  const [staleMinInvAmt, setStaleMinInvAmt] = useState(0)
+  const [staleMinTotalInv, setStaleMinTotalInv] = useState(0)
+  const [staleMinInvWeeks, setStaleMinInvWeeks] = useState(0)
   const [chatOpen, setChatOpen] = useState(false)
   const [chatMessages, setChatMessages] = useState<{role: string; content: string}[]>([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
 
   const itemSort = useSortable('totalInv')
-  const styleSort = useSortable('totalInv')
+  const styleSort = useSortable('invAmt')
   const chSort = useSortable('totalRev')
   const yrSort = useSortable('year')
 
@@ -116,9 +119,9 @@ export default function CarryoverPage() {
   const fetchAiAdvice = async () => {
     setAiLoading(true)
     try {
-      const topStale = (data?.staleStyles ?? []).slice(0, 10).map((s: any) => `${s.stylenm}(${s.yearcd}) 재고${s.totalInv} 소진율${s.sellThrough}%`)
+      const topStale = (data?.staleStyles ?? []).slice(0, 10).map((s: any) => `${s.stylenm}(${s.yearcd}) 재고${s.totalInv} 판매율${s.sellThrough}%`)
       const chInfo = channels.map((c: any) => `${c.channel}: 전주${Math.round(c.cwRev/1e6)}백만 비중${c.share}%`)
-      const yrInfo = years.map((y: any) => `20${y.year}: 재고${y.totalInv} 소진율${y.sellThrough}%`)
+      const yrInfo = years.map((y: any) => `20${y.year}: 재고${y.totalInv} 판매율${y.sellThrough}%`)
       const res = await fetch('/api/planning/carryover-advice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -137,7 +140,7 @@ export default function CarryoverPage() {
       '품목': s.item, '시즌': s.yearcd, '정가': s.tagPrice,
       '매장재고': s.shopInv, '창고재고': s.whAvail, '총재고': s.totalInv,
       '재고금액': s.invAmt, '판매수량': s.saleQty, '매출': s.saleAmt,
-      '전주매출': s.cwRev, '소진율': `${s.sellThrough}%`,
+      '전주매출': s.cwRev, '판매율': `${s.sellThrough}%`,
     }))
     const ws = XLSX.utils.json_to_sheet(rows)
     const wb = XLSX.utils.book_new()
@@ -154,9 +157,9 @@ export default function CarryoverPage() {
     setChatLoading(true)
     try {
       const context = {
-        staleStyles: (data?.staleStyles ?? []).slice(0, 15).map((s: any) => `${s.stylenm}(${s.yearcd}) 재고${s.totalInv} 소진율${s.sellThrough}%`),
+        staleStyles: (data?.staleStyles ?? []).slice(0, 15).map((s: any) => `${s.stylenm}(${s.yearcd}) 재고${s.totalInv} 판매율${s.sellThrough}%`),
         channels: channels.map((c: any) => `${c.channel}: 전주${Math.round(c.cwRev/1e6)}백만 비중${c.share}%`),
-        years: years.map((y: any) => `20${y.year}: 재고${y.totalInv} 소진율${y.sellThrough}%`),
+        years: years.map((y: any) => `20${y.year}: 재고${y.totalInv} 판매율${y.sellThrough}%`),
         brand, question: userMsg,
         history: newMsgs.slice(-6),
       }
@@ -170,7 +173,13 @@ export default function CarryoverPage() {
     finally { setChatLoading(false) }
   }
 
-  const filteredStyles = (selItem || selYear) ? filteredStaleStyles : (data?.staleStyles ?? [])
+  const rawStyles = (selItem || selYear) ? filteredStaleStyles : (data?.staleStyles ?? [])
+  const filteredStyles = rawStyles.filter((s: any) => {
+    if (staleMinInvAmt > 0 && s.invAmt < staleMinInvAmt) return false
+    if (staleMinTotalInv > 0 && s.totalInv < staleMinTotalInv) return false
+    if (staleMinInvWeeks > 0 && s.invWeeks < staleMinInvWeeks) return false
+    return true
+  })
 
   return (
     <div className="flex flex-col gap-3 p-4 min-h-0">
@@ -178,7 +187,7 @@ export default function CarryoverPage() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-lg font-bold text-gray-900">이월재고 관리</h1>
-          <p className="text-xs text-gray-400 mt-0.5">이월 상품 재고·매출·소진율 분석 · 적체 상품 관리</p>
+          <p className="text-xs text-gray-400 mt-0.5">이월 상품 재고·매출·판매율 분석 · 적체 상품 관리</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex gap-0.5 bg-surface-subtle rounded-lg p-0.5">
@@ -223,12 +232,13 @@ export default function CarryoverPage() {
 
       {/* KPI */}
       {!loading && data && (
-        <div className="grid grid-cols-5 gap-3">
+        <div className="grid grid-cols-6 gap-3">
           {([
             { title: '이월 품목수', value: `${data.kpi.itemCount}개`, color: '' },
             { title: '총 재고수량', value: data.kpi.totalInv.toLocaleString(), color: '' },
             { title: '재고금액(TAG)', value: fmtW(data.kpi.totalInvAmt), color: '' },
             { title: '전주 매출', value: fmtW(data.kpi.totalCwRev), color: '' },
+            { title: '재고주수(평균)', value: `${data.kpi.avgInvWeeks}주`, color: data.kpi.avgInvWeeks >= 20 ? 'text-red-600' : data.kpi.avgInvWeeks >= 10 ? 'text-amber-600' : '' },
             { title: '적체 상품', value: `${data.kpi.staleCount}개`, color: data.kpi.staleCount > 0 ? 'text-red-600' : '' },
           ]).map(k => (
             <div key={k.title} className="bg-white rounded-xl border border-surface-border shadow-sm p-4">
@@ -258,7 +268,9 @@ export default function CarryoverPage() {
                     <SortTh k="invAmt" label="재고금액" sort={itemSort} />
                     <SortTh k="cwRev" label="전주매출" sort={itemSort} />
                     <SortTh k="wow" label="WoW" sort={itemSort} />
-                    <SortTh k="sellThrough" label="소진율" sort={itemSort} />
+                    <SortTh k="sellThrough" label="판매율" sort={itemSort} />
+                    <SortTh k="invWeeks" label="재고주수" sort={itemSort} />
+                    <SortTh k="whRatio" label="창고비중" sort={itemSort} />
                   </tr>
                 </thead>
                 <tbody>
@@ -280,6 +292,19 @@ export default function CarryoverPage() {
                           item.sellThrough >= 20 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700')}>
                           {item.sellThrough}%
                         </span>
+                      </td>
+                      <td className="px-1 py-2 text-right">
+                        <span className={cn('px-1.5 py-0.5 rounded-full text-[9px] font-semibold',
+                          item.invWeeks >= 20 ? 'bg-red-100 text-red-700' :
+                          item.invWeeks >= 10 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>
+                          {item.invWeeks >= 999 ? '—' : `${item.invWeeks}주`}
+                        </span>
+                      </td>
+                      <td className="px-1 py-2 text-right">
+                        <span className={cn('font-mono text-[10px]', item.whRatio >= 70 ? 'text-red-600 font-bold' : 'text-gray-500')}>
+                          {item.whRatio}%
+                        </span>
+                        {item.whRatio >= 70 && <span className="ml-0.5 text-[8px] text-red-500" title="매장배분필요">!</span>}
                       </td>
                     </tr>
                   ))}
@@ -337,7 +362,7 @@ export default function CarryoverPage() {
                     <SortTh k="styleCnt" label="스타일" sort={yrSort} />
                     <SortTh k="totalInv" label="재고" sort={yrSort} />
                     <SortTh k="cwRev" label="전주매출" sort={yrSort} />
-                    <SortTh k="sellThrough" label="소진율" sort={yrSort} />
+                    <SortTh k="sellThrough" label="판매율" sort={yrSort} />
                   </tr>
                 </thead>
                 <tbody>
@@ -369,9 +394,33 @@ export default function CarryoverPage() {
         <div className="flex-[4] bg-white rounded-xl border border-surface-border shadow-sm overflow-hidden flex flex-col min-w-0">
           <div className="px-3 py-2 border-b border-surface-border bg-surface-subtle shrink-0">
             <h3 className="text-xs font-semibold text-gray-700">
-              {selItem ? `${selItem} 이월 상품` : '적체 상품 (재고 많은 순)'}
+              {selItem ? `${selItem} 이월 상품` : '적체 상품 (재고금액 높은 순)'}
               <span className="font-normal text-gray-400 ml-1">{filteredStyles.length}개</span>
             </h3>
+          </div>
+          <div className="px-3 py-1.5 flex gap-2 items-center border-b border-surface-border">
+            <span className="text-[10px] text-gray-400">필터:</span>
+            <select value={staleMinInvAmt} onChange={e => setStaleMinInvAmt(Number(e.target.value))}
+              className="text-[10px] border border-gray-200 rounded px-1.5 py-0.5 text-gray-600">
+              <option value={0}>재고금액 전체</option>
+              <option value={500000000}>5억 이상</option>
+              <option value={1000000000}>10억 이상</option>
+              <option value={2000000000}>20억 이상</option>
+            </select>
+            <select value={staleMinTotalInv} onChange={e => setStaleMinTotalInv(Number(e.target.value))}
+              className="text-[10px] border border-gray-200 rounded px-1.5 py-0.5 text-gray-600">
+              <option value={0}>재고수량 전체</option>
+              <option value={1000}>1,000장 이상</option>
+              <option value={3000}>3,000장 이상</option>
+              <option value={5000}>5,000장 이상</option>
+            </select>
+            <select value={staleMinInvWeeks} onChange={e => setStaleMinInvWeeks(Number(e.target.value))}
+              className="text-[10px] border border-gray-200 rounded px-1.5 py-0.5 text-gray-600">
+              <option value={0}>재고주수 전체</option>
+              <option value={10}>10주 이상</option>
+              <option value={20}>20주 이상</option>
+              <option value={30}>30주 이상</option>
+            </select>
           </div>
           <div className="overflow-auto flex-1">
             {loading ? <div className="p-3 space-y-2">{Array.from({length:8}).map((_,i)=><div key={i} className="h-7 bg-surface-subtle animate-pulse rounded"/>)}</div> : filteredStyles.length > 0 ? (
@@ -386,7 +435,9 @@ export default function CarryoverPage() {
                     <SortTh k="invAmt" label="재고금액" sort={styleSort} />
                     <SortTh k="saleQty" label="판매" sort={styleSort} />
                     <SortTh k="cwRev" label="전주" sort={styleSort} />
-                    <SortTh k="sellThrough" label="소진율" sort={styleSort} />
+                    <SortTh k="sellThrough" label="판매율" sort={styleSort} />
+                    <SortTh k="invWeeks" label="재고주수" sort={styleSort} />
+                    <SortTh k="whRatio" label="창고비중" sort={styleSort} />
                   </tr>
                 </thead>
                 <tbody>
@@ -409,6 +460,19 @@ export default function CarryoverPage() {
                           s.sellThrough >= 20 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700')}>
                           {s.sellThrough}%
                         </span>
+                      </td>
+                      <td className="px-1 py-1.5 text-right">
+                        <span className={cn('px-1.5 py-0.5 rounded-full text-[9px] font-semibold',
+                          s.invWeeks >= 20 ? 'bg-red-100 text-red-700' :
+                          s.invWeeks >= 10 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}>
+                          {s.invWeeks >= 999 ? '—' : `${s.invWeeks}주`}
+                        </span>
+                      </td>
+                      <td className="px-1 py-1.5 text-right">
+                        <span className={cn('font-mono text-[10px]', s.whRatio >= 70 ? 'text-red-600 font-bold' : 'text-gray-500')}>
+                          {s.whRatio}%
+                        </span>
+                        {s.whRatio >= 70 && <span className="ml-0.5 px-1 py-px rounded bg-red-100 text-red-600 text-[8px] font-semibold">매장배분필요</span>}
                       </td>
                     </tr>
                   ))}
@@ -446,9 +510,9 @@ export default function CarryoverPage() {
                       setChatMessages(newMsgs)
                       setChatLoading(true)
                       const context = {
-                        staleStyles: (data?.staleStyles ?? []).slice(0, 15).map((s: any) => `${s.stylenm}(${s.yearcd}) 재고${s.totalInv} 소진율${s.sellThrough}%`),
+                        staleStyles: (data?.staleStyles ?? []).slice(0, 15).map((s: any) => `${s.stylenm}(${s.yearcd}) 재고${s.totalInv} 판매율${s.sellThrough}%`),
                         channels: channels.map((c: any) => `${c.channel}: 전주${Math.round(c.cwRev/1e6)}백만 비중${c.share}%`),
-                        years: allYears.map((y: any) => `20${y.year}: 재고${y.totalInv} 소진율${y.sellThrough}%`),
+                        years: allYears.map((y: any) => `20${y.year}: 재고${y.totalInv} 판매율${y.sellThrough}%`),
                         brand, question: q, history: newMsgs,
                       }
                       fetch('/api/planning/carryover-advice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(context) })

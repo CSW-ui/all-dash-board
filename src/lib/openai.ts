@@ -1,25 +1,25 @@
 /**
- * OpenAI API 유틸리티
+ * Claude API 유틸리티 (Anthropic)
  */
 
-const OPENAI_API_URL = process.env.OPENAI_API_URL || 'https://api.openai.com/v1'
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY!
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY!
 
 export async function chatCompletion(
   systemPrompt: string,
   userMessage: string,
   options?: { temperature?: number; maxTokens?: number }
 ): Promise<string> {
-  const res = await fetch(`${OPENAI_API_URL}/chat/completions`, {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: 'claude-sonnet-4-20250514',
+      system: systemPrompt,
       messages: [
-        { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
       ],
       temperature: options?.temperature ?? 0.3,
@@ -29,9 +29,9 @@ export async function chatCompletion(
 
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(`OpenAI API 실패: ${res.status} ${text}`)
+    throw new Error(`Claude API 실패: ${res.status} ${text}`)
   }
 
   const json = await res.json()
-  return json.choices?.[0]?.message?.content ?? ''
+  return json.content?.[0]?.text ?? ''
 }

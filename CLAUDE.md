@@ -1,6 +1,7 @@
-# BCAVE 업무 자동화 플랫폼 (all dash board)
+# BCAVE Portal
 
-패션 기업 비케이브(B.cave)의 임직원용 업무 자동화 플랫폼.
+패션 기업 비케이브(B.cave)의 EIS(Executive Information System).
+ERP 등 기간 시스템의 데이터를 통합하여 경영진·실무자의 의사결정을 지원하는 플랫폼.
 상품기획 → 디자인 → 생산 → 마케팅 → 영업 → 이커머스 → CS 전체 밸류체인 자동화.
 
 ## 브랜드

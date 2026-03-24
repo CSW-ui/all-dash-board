@@ -24,6 +24,7 @@ export async function GET(req: Request) {
   const weekNum      = searchParams.get('weekNum')
   const channelGroup = searchParams.get('channelGroup') || ''
   const channel      = searchParams.get('channel')      || ''
+  const channels     = searchParams.get('channels')     || ''  // 다중 채널 (콤마 구분)
   const itemNm       = searchParams.get('item')          || ''
 
   const fromDt = searchParams.get('fromDt') || `${year}0101`
@@ -37,7 +38,10 @@ export async function GET(req: Request) {
 
   let chFilter = ''
   const col = 's.SHOPTYPENM'
-  if (channel) {
+  if (channels) {
+    const chList = channels.split(',').map(c => `'${c.trim().replace(/'/g, "''")}'`).join(',')
+    chFilter = `AND ${col} IN (${chList})`
+  } else if (channel) {
     chFilter = `AND ${col} = '${channel.replace(/'/g, "''")}'`
   } else if (channelGroup === '해외') {
     chFilter = `AND (${col} LIKE '%해외%' OR ${col} LIKE '%수출%')`

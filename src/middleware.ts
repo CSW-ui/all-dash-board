@@ -22,11 +22,16 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  const isLoginPage = request.nextUrl.pathname.startsWith('/login')
-  const isApiRoute = request.nextUrl.pathname.startsWith('/api')
+  const pathname = request.nextUrl.pathname
+  const isLoginPage = pathname.startsWith('/login')
+  const isApiRoute = pathname.startsWith('/api')
+  const isVendorRoute = pathname.startsWith('/vendor')
 
   // API routes: skip redirect (API handles auth separately)
   if (isApiRoute) return supabaseResponse
+
+  // 협력사 경로는 자체 인증 처리 (vendor layout에서 처리)
+  if (isVendorRoute) return supabaseResponse
 
   // 로그인 안된 상태에서 login 페이지 외 접근 → /login으로
   if (!user && !isLoginPage) {

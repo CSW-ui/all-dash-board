@@ -92,19 +92,31 @@ export async function GET(req: Request) {
     const shopInv = Number(invData[0]?.SHOP_INV) || 0
     const whAvail = Number(invData[0]?.WH_AVAIL) || 0
 
-    // 2. 기상청 기온 예보
+    // 2. 기상청 기온 예보 (05시 이전이면 전일 2300 발표 사용)
     let weatherInfo = ''
     try {
-      const today = new Date()
-      const baseDate = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`
-      const wRes = await fetch(`https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey=${WEATHER_API_KEY}&pageNo=1&numOfRows=300&dataType=JSON&base_date=${baseDate}&base_time=0500&nx=60&ny=127`)
+      const now = new Date()
+      const kstHour = now.getHours()
+      const useYesterday = kstHour < 6
+      const baseD = useYesterday ? new Date(now.getTime() - 86400000) : now
+      const baseDate = `${baseD.getFullYear()}${String(baseD.getMonth()+1).padStart(2,'0')}${String(baseD.getDate()).padStart(2,'0')}`
+      const baseTime = useYesterday ? '2300' : '0500'
+      const wRes = await fetch(`https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey=${encodeURIComponent(WEATHER_API_KEY)}&pageNo=1&numOfRows=300&dataType=JSON&base_date=${baseDate}&base_time=${baseTime}&nx=60&ny=127`)
       const wJson = await wRes.json()
+      if (wJson.response?.header?.resultCode !== '00') {
+        console.error('[기상청] forecast 응답 에러:', wJson.response?.header?.resultMsg)
+      }
       const items = wJson.response?.body?.items?.item ?? []
       const temps = items.filter((i: any) => i.category === 'TMP').map((i: any) => ({ date: i.fcstDate, time: i.fcstTime, temp: Number(i.fcstValue) }))
       const tmx = items.filter((i: any) => i.category === 'TMX').map((i: any) => Number(i.fcstValue))
       const tmn = items.filter((i: any) => i.category === 'TMN').map((i: any) => Number(i.fcstValue))
-      weatherInfo = `서울 기온 예보: 최고 ${tmx[0] ?? '?'}°C, 최저 ${tmn[0] ?? '?'}°C. 시간별: ${temps.slice(0, 8).map((t: any) => `${t.time.slice(0,2)}시 ${t.temp}°C`).join(', ')}`
-    } catch { weatherInfo = '기온 데이터 조회 실패' }
+      weatherInfo = tmx.length || tmn.length
+        ? `서울 기온 예보: 최고 ${tmx[0] ?? '?'}°C, 최저 ${tmn[0] ?? '?'}°C. 시간별: ${temps.slice(0, 8).map((t: any) => `${t.time.slice(0,2)}시 ${t.temp}°C`).join(', ')}`
+        : '기온 데이터 없음'
+    } catch (err) {
+      console.error('[기상청] forecast API 호출 실패:', err)
+      weatherInfo = '기온 데이터 조회 실패'
+    }
 
     // 3. Claude에 전달
     const maxCyWeek = Math.max(...Object.entries(cyTotal).filter(([, v]) => v > 0).map(([k]) => Number(k)), 0)
@@ -153,9 +165,25 @@ export async function GET(req: Request) {
     {"week": 주차번호, "total": 예상매출_억, "channels": {"백화점": 억, "아울렛": 억, ...}},
     ...향후 8주
   ],
-  "summary": "전체 분석 요약 (한국어 3-4문장)",
+  "status": "정상|위험|기회",
+  "statusSummary": "한줄 상태 요약 (예: '판매율 호조, 재고 소진 순항 중')",
+  "topFactors": [
+    {"factor": "호/부진 원인", "impact": "positive|negative", "detail": "설명"},
+    {"factor": "호/부진 원인", "impact": "positive|negative", "detail": "설명"},
+    {"factor": "호/부진 원인", "impact": "positive|negative", "detail": "설명"}
+  ],
+  "pmd": {
+    "product": ["리오더/단종/SKU조정/컬러추가 등 Product 관점 제안"],
+    "marketing": ["콘텐츠/타겟/셀럽/프로모션 등 Marketing 관점 제안"],
+    "distribution": ["채널/할인/재배치/출고조정 등 Distribution 관점 제안"]
+  },
+  "seasonEndForecast": {
+    "expectedSalesRate": "시즌 종료 시 예상 판매율(%)",
+    "remainingInventory": "잔여 재고금액 추정(억)",
+    "profitOutlook": "예상 손익 코멘트"
+  },
   "risks": ["위험요소1", "위험요소2"],
-  "suggestions": ["제안1", "제안2", "제안3"]
+  "summary": "전체 분석 요약 (한국어 3-4문장)"
 }
 \`\`\``,
         messages: [{ role: 'user', content: JSON.stringify(dataForAI) }],
@@ -179,6 +207,11 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       forecast: forecast?.forecast ?? [],
+      status: forecast?.status ?? '정상',
+      statusSummary: forecast?.statusSummary ?? '',
+      topFactors: forecast?.topFactors ?? [],
+      pmd: forecast?.pmd ?? { product: [], marketing: [], distribution: [] },
+      seasonEndForecast: forecast?.seasonEndForecast ?? null,
       summary: forecast?.summary ?? aiText,
       risks: forecast?.risks ?? [],
       suggestions: forecast?.suggestions ?? [],

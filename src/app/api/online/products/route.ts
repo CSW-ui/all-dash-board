@@ -51,7 +51,8 @@ export async function GET(req: NextRequest) {
     console.log('[online/products] Snowflake rows:', sfData.length)
 
     // 2. Supabase에서 수동입력 데이터 조회 (테이블 없으면 무시)
-    let manualData: Record<string, unknown>[] | null = null
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let manualData: Record<string, any>[] | null = null
     try {
       const supabase = createSupabaseServerClient()
       const { data, error } = await supabase
